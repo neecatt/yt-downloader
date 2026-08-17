@@ -1,0 +1,7 @@
+.git
+.gitignore
+.venv
+tgbot_env
+__pycache__
+*.pyc
+*.part

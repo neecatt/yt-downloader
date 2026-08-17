@@ -1,0 +1,6 @@
+.venv/
+tgbot_env/
+__pycache__/
+*.py[cod]
+.env
+.DS_Store
