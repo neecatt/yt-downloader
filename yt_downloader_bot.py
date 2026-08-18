@@ -94,6 +94,7 @@ SUPPORTED_CHAT_HOSTS = {
     "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be",
     "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
     "instagram.com", "www.instagram.com",
+    "facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com", "fb.watch",
 }
 
 
@@ -418,8 +419,8 @@ def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCa
 
 def display_error(exc: Exception) -> str:
     text = str(exc).lower()
-    if "private" in text or "login" in text:
-        return "This video is private or requires an account, so it cannot be downloaded."
+    if "private" in text or "login" in text or "cannot parse data" in text or "requires authentication" in text:
+        return "This media is private or requires login. The bot can only access publicly available posts and accounts."
     if "age" in text and "restrict" in text:
         return "This video is age-restricted and cannot be downloaded here."
     if "not available in your country" in text or "geo-restricted" in text or "geo restriction" in text:
@@ -441,7 +442,7 @@ def display_error(exc: Exception) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
-        "Send a YouTube, TikTok, or Instagram link, or use /download <https-url>.\n\n"
+        "Send a YouTube, TikTok, Instagram, or Facebook link, or use /download <https-url>.\n\n"
         "Choose a quality, then I’ll download it and send it back."
     )
 
@@ -484,7 +485,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.effective_message.text or ""
     url = extract_url(text)
     if not url:
-        await update.effective_message.reply_text("Please send a YouTube, TikTok, or Instagram HTTPS link.")
+        await update.effective_message.reply_text("Please send a YouTube, TikTok, Instagram, or Facebook HTTPS link.")
         return
     await make_choice(update, url)
 

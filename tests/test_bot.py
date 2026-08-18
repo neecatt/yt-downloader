@@ -93,6 +93,7 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(bot.extract_url("See https://youtu.be/abc123."), "https://youtu.be/abc123")
         self.assertEqual(bot.extract_url("https://www.tiktok.com/@user/video/1"), "https://www.tiktok.com/@user/video/1")
         self.assertEqual(bot.extract_url("https://www.instagram.com/reel/ABC123/"), "https://www.instagram.com/reel/ABC123/")
+        self.assertEqual(bot.extract_url("https://www.facebook.com/reel/ABC123/"), "https://www.facebook.com/reel/ABC123/")
         self.assertIsNone(bot.extract_url("http://youtu.be/abc123"))
         self.assertIsNone(bot.extract_url("https://example.com/video"))
 
@@ -212,7 +213,8 @@ class PureFunctionTests(unittest.TestCase):
         self.assertIn("Preparing", bot.progress_text({"status": "started"}, "720p"))
 
     def test_error_messages_do_not_leak_internal_details(self):
-        self.assertIn("private", bot.display_error(Exception("Private video")))
+        self.assertIn("publicly available", bot.display_error(Exception("Private Facebook post")))
+        self.assertIn("publicly available", bot.display_error(Exception("Facebook: Cannot parse data")))
         self.assertIn("lower quality", bot.display_error(Exception("file too large")))
         self.assertIn("timed out", bot.display_error(Exception("connection timeout")))
         self.assertIn("source rejected", bot.display_error(Exception("HTTP Error 403: Forbidden")))
@@ -247,7 +249,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_message_handler_rejects_unsupported_input(self):
         update, message = update_for("not a video link")
         await bot.handle_message(update, SimpleNamespace())
-        self.assertIn("YouTube, TikTok, or Instagram", message.replies[0][0])
+        self.assertIn("YouTube, TikTok, Instagram, or Facebook", message.replies[0][0])
 
     async def test_download_command_analyzes_link_and_offers_choices(self):
         update, message = update_for()
