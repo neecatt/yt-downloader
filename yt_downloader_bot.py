@@ -67,6 +67,7 @@ YTDLP_COOKIES_B64 = os.getenv("YTDLP_COOKIES_B64")
 YTDLP_PROXY = os.getenv("YTDLP_PROXY")
 YTDLP_PLAYER_CLIENT = os.getenv("YTDLP_PLAYER_CLIENT")
 YTDLP_PO_TOKEN = os.getenv("YTDLP_PO_TOKEN")
+YTDLP_POT_PROVIDER_URL = os.getenv("YTDLP_POT_PROVIDER_URL")
 YTDLP_JS_RUNTIME = os.getenv("YTDLP_JS_RUNTIME")
 TELEGRAM_API_BASE_URL = os.getenv("TELEGRAM_API_BASE_URL")
 TELEGRAM_API_FILE_BASE_URL = os.getenv("TELEGRAM_API_FILE_BASE_URL")
@@ -278,7 +279,15 @@ def ydl_base_options(tmpdir: str, progress_callback: ProgressCallback | None = N
         options["js_runtimes"] = {YTDLP_JS_RUNTIME: {}}
     extractor_args: dict[str, dict[str, list[str]]] = {}
     youtube_args: dict[str, list[str]] = {}
-    if YTDLP_PLAYER_CLIENT:
+    if YTDLP_POT_PROVIDER_URL:
+        # The current yt-dlp guidance recommends mweb with a PO-token
+        # provider. The old tv_embedded client is no longer a safe default.
+        provider_client = YTDLP_PLAYER_CLIENT or "mweb"
+        if provider_client == "tv_embedded":
+            provider_client = "mweb"
+        youtube_args["player_client"] = [provider_client]
+        extractor_args["youtubepot-bgutilhttp"] = {"base_url": [YTDLP_POT_PROVIDER_URL]}
+    elif YTDLP_PLAYER_CLIENT:
         youtube_args["player_client"] = [YTDLP_PLAYER_CLIENT]
     if YTDLP_PO_TOKEN:
         youtube_args["po_token"] = [YTDLP_PO_TOKEN]

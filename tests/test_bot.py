@@ -133,6 +133,22 @@ class PureFunctionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bot.ydl_options("/tmp", "4k")
 
+    def test_pot_provider_configures_mweb_and_private_provider(self):
+        with patch.object(bot, "YTDLP_POT_PROVIDER_URL", "http://bgutil-provider.railway.internal:4416"), \
+             patch.object(bot, "YTDLP_PLAYER_CLIENT", None):
+            options = bot.ydl_base_options("/tmp/download")
+        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb"])
+        self.assertEqual(
+            options["extractor_args"]["youtubepot-bgutilhttp"]["base_url"],
+            ["http://bgutil-provider.railway.internal:4416"],
+        )
+
+    def test_legacy_tv_embedded_client_is_replaced_when_provider_is_enabled(self):
+        with patch.object(bot, "YTDLP_POT_PROVIDER_URL", "http://provider:4416"), \
+             patch.object(bot, "YTDLP_PLAYER_CLIENT", "tv_embedded"):
+            options = bot.ydl_base_options("/tmp/download")
+        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb"])
+
     def test_cookie_file_from_base64_requires_netscape_format(self):
         original_b64 = bot.YTDLP_COOKIES_B64
         original_file = bot.YTDLP_EFFECTIVE_COOKIES_FILE
