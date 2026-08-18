@@ -76,6 +76,9 @@ TELEGRAM_API_BASE_URL = os.getenv("TELEGRAM_API_BASE_URL")
 TELEGRAM_API_FILE_BASE_URL = os.getenv("TELEGRAM_API_FILE_BASE_URL")
 DELIVERY_MODE = os.getenv("DELIVERY_MODE", "telegram").lower()
 ALLOW_GENERIC_HTTPS = os.getenv("ALLOW_GENERIC_HTTPS", "false").lower() in {"1", "true", "yes"}
+DONATION_URL_RAW = os.getenv("DONATION_URL", "").strip()
+DONATION_PROMPTS_ENABLED = os.getenv("DONATION_PROMPTS_ENABLED", "true").lower() in {"1", "true", "yes"}
+DONATION_PROMPT_COOLDOWN_SECONDS = max(0, int(os.getenv("DONATION_PROMPT_COOLDOWN_HOURS", "24"))) * 3600
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
 R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL") or (f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else None)
 R2_API_TOKEN = os.getenv("R2_API_TOKEN")
@@ -98,6 +101,20 @@ SUPPORTED_CHAT_HOSTS = {
 }
 
 
+def validate_donation_url(value: str) -> str | None:
+    """Accept only a plain HTTPS donation URL without embedded credentials."""
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        LOG.warning("DONATION_URL ignored because it is not a valid HTTPS URL")
+        return None
+    return value
+
+
+DONATION_URL = validate_donation_url(DONATION_URL_RAW)
+
+
 @dataclass(slots=True)
 class LinkState:
     url: str
@@ -110,6 +127,7 @@ class LinkState:
 
 STATES: dict[str, LinkState] = {}
 DOWNLOAD_LOCKS: dict[int, asyncio.Lock] = {}
+SUPPORT_PROMPT_LAST_SHOWN: dict[tuple[int, int], float] = {}
 EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="download")
 ProgressCallback = Callable[[dict[str, Any]], None]
 
@@ -244,6 +262,48 @@ def format_duration(seconds: int | float | None) -> str:
 def safe_filename(title: str, extension: str) -> str:
     cleaned = re.sub(r"[^\w\-. ]+", "", title, flags=re.UNICODE).strip(" .") or "download"
     return f"{cleaned[:80]}.{extension}"
+
+
+def support_is_configured() -> bool:
+    return DONATION_PROMPTS_ENABLED and bool(DONATION_URL)
+
+
+def support_prompt_allowed(chat_id: int, user_id: int, now: float | None = None) -> bool:
+    if not support_is_configured():
+        return False
+    current = time.monotonic() if now is None else now
+    last_shown = SUPPORT_PROMPT_LAST_SHOWN.get((chat_id, user_id))
+    return last_shown is None or current - last_shown >= DONATION_PROMPT_COOLDOWN_SECONDS
+
+
+def mark_support_prompt_shown(chat_id: int, user_id: int, now: float | None = None) -> None:
+    SUPPORT_PROMPT_LAST_SHOWN[(chat_id, user_id)] = time.monotonic() if now is None else now
+
+
+def support_keyboard() -> InlineKeyboardMarkup | None:
+    if not support_is_configured():
+        return None
+    buttons = [InlineKeyboardButton("☕ Support this bot", url=DONATION_URL)]
+    return InlineKeyboardMarkup([buttons])
+
+
+async def send_support_prompt(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, *, force: bool = False) -> bool:
+    if not force and not support_prompt_allowed(chat_id, user_id):
+        return False
+    markup = support_keyboard()
+    if not markup:
+        return False
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "If this bot saved you time, you can support its Railway, R2, "
+            "and bandwidth costs. Donations are optional and the bot remains free."
+        ),
+        reply_markup=markup,
+    )
+    if not force:
+        mark_support_prompt_shown(chat_id, user_id)
+    return True
 
 
 def r2_is_configured() -> bool:
@@ -443,8 +503,19 @@ def display_error(exc: Exception) -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Send a YouTube, TikTok, Instagram, or Facebook link, or use /download <https-url>.\n\n"
-        "Choose a quality, then I’ll download it and send it back."
+        "Choose a quality, then I’ll download it and send it back.\n"
+        "Use /support if you would like to help keep the bot running.",
+        reply_markup=support_keyboard(),
     )
+
+
+async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not support_is_configured():
+        await update.effective_message.reply_text(
+            "Support is not configured yet, but the bot remains free to use."
+        )
+        return
+    await send_support_prompt(context, update.effective_chat.id, update.effective_user.id, force=True)
 
 
 async def make_choice(update: Update, url: str, info: dict[str, Any] | None = None) -> None:
@@ -513,10 +584,15 @@ async def send_r2_link(
     info: dict[str, Any],
     fmt: str,
     size_bytes: int | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     title = info.get("title", "Downloaded file")
     size_text = f"{size_bytes / 1024 / 1024:.1f} MB" if size_bytes else "large"
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬇️ Download file", url=url)]])
+    download_button = [InlineKeyboardButton("⬇️ Download file", url=url)]
+    keyboard_rows = [download_button]
+    if reply_markup:
+        keyboard_rows.extend(reply_markup.inline_keyboard)
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
@@ -624,14 +700,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 if DELIVERY_MODE == "r2":
                     await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
                     download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
-                    await send_r2_link(context, state.chat_id, download_url, info, fmt, file_size)
+                    offer_support = support_prompt_allowed(state.chat_id, state.user_id)
+                    await send_r2_link(
+                        context, state.chat_id, download_url, info, fmt, file_size,
+                        support_keyboard() if offer_support else None,
+                    )
+                    if offer_support:
+                        mark_support_prompt_shown(state.chat_id, state.user_id)
                 elif DELIVERY_MODE == "auto" and file_size > MAX_UPLOAD_BYTES and r2_is_configured():
                     await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
                     download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
-                    await send_r2_link(context, state.chat_id, download_url, info, fmt, file_size)
+                    offer_support = support_prompt_allowed(state.chat_id, state.user_id)
+                    await send_r2_link(
+                        context, state.chat_id, download_url, info, fmt, file_size,
+                        support_keyboard() if offer_support else None,
+                    )
+                    if offer_support:
+                        mark_support_prompt_shown(state.chat_id, state.user_id)
                 elif file_size <= MAX_UPLOAD_BYTES:
                     await query.edit_message_text("⬆️ Uploading to Telegram…\nDownload: 100%")
                     await send_file(context, state.chat_id, filename, info, extension, fmt)
+                    await send_support_prompt(context, state.chat_id, state.user_id)
                 else:
                     raise ValueError("The file exceeds Telegram's upload limit and cloud delivery is not configured")
                 await query.delete_message()
@@ -659,6 +748,7 @@ def main() -> None:
         builder = builder.base_file_url(TELEGRAM_API_FILE_BASE_URL)
     application = builder.build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("support", support_command))
     application.add_handler(CommandHandler("download", download_command))
     application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^d\|"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

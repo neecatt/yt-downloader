@@ -88,6 +88,7 @@ def update_for(text: str = "", *, chat_id: int = 10, user_id: int = 20):
 class PureFunctionTests(unittest.TestCase):
     def setUp(self):
         bot.STATES.clear()
+        bot.SUPPORT_PROMPT_LAST_SHOWN.clear()
 
     def test_extracts_supported_https_links_and_strips_punctuation(self):
         self.assertEqual(bot.extract_url("See https://youtu.be/abc123."), "https://youtu.be/abc123")
@@ -225,17 +226,53 @@ class PureFunctionTests(unittest.TestCase):
         self.assertNotIn("secret-value", result)
         self.assertIn("[url-redacted]", result)
 
+    def test_donation_url_requires_https_without_credentials(self):
+        self.assertEqual(bot.validate_donation_url("https://www.buymeacoffee.com/example"), "https://www.buymeacoffee.com/example")
+        self.assertIsNone(bot.validate_donation_url("http://www.buymeacoffee.com/example"))
+        self.assertIsNone(bot.validate_donation_url("https://user:pass@buymeacoffee.com/example"))
+
+    def test_missing_donation_url_disables_support_and_cooldown_is_enforced(self):
+        with patch.object(bot, "DONATION_URL", None), patch.object(bot, "DONATION_PROMPTS_ENABLED", True):
+            self.assertIsNone(bot.support_keyboard())
+        with patch.object(bot, "DONATION_URL", "https://www.buymeacoffee.com/example"), \
+             patch.object(bot, "DONATION_PROMPTS_ENABLED", True), \
+             patch.object(bot, "DONATION_PROMPT_COOLDOWN_SECONDS", 100):
+            self.assertTrue(bot.support_prompt_allowed(10, 20, now=100))
+            bot.mark_support_prompt_shown(10, 20, now=100)
+            self.assertFalse(bot.support_prompt_allowed(10, 20, now=150))
+            self.assertTrue(bot.support_prompt_allowed(10, 20, now=200))
+
 
 class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.STATES.clear()
         bot.DOWNLOAD_LOCKS.clear()
+        bot.SUPPORT_PROMPT_LAST_SHOWN.clear()
 
     async def test_start_explains_supported_usage(self):
         update, message = update_for()
         await bot.start(update, SimpleNamespace())
         self.assertIn("YouTube", message.replies[0][0])
         self.assertIn("/download", message.replies[0][0])
+
+    async def test_start_shows_support_button_when_configured(self):
+        update, message = update_for()
+        with patch.object(bot, "DONATION_URL", "https://www.buymeacoffee.com/example"), \
+             patch.object(bot, "DONATION_PROMPTS_ENABLED", True):
+            await bot.start(update, SimpleNamespace())
+        buttons = message.replies[0][1].inline_keyboard
+        self.assertEqual(buttons[0][0].text, "☕ Support this bot")
+
+    async def test_support_command_always_works_even_after_prompt_cooldown(self):
+        update, message = update_for()
+        context = SimpleNamespace(bot=FakeBot())
+        with patch.object(bot, "DONATION_URL", "https://www.buymeacoffee.com/example"), \
+             patch.object(bot, "DONATION_PROMPTS_ENABLED", True), \
+             patch.object(bot, "DONATION_PROMPT_COOLDOWN_SECONDS", 86400):
+            bot.mark_support_prompt_shown(10, 20, now=100)
+            await bot.support_command(update, context)
+        self.assertEqual(len(context.bot.messages), 1)
+        self.assertIn("support", context.bot.messages[0]["text"].lower())
 
     async def test_message_handler_offers_format_buttons(self):
         update, message = update_for("Download https://youtu.be/abc")
@@ -283,11 +320,16 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             output.write_bytes(b"fake audio")
             return {"title": "Song"}, output, "mp3"
 
-        with patch.object(bot, "DELIVERY_MODE", "auto"), patch.object(bot, "download_sync", side_effect=fake_download):
+        with patch.object(bot, "DELIVERY_MODE", "auto"), \
+             patch.object(bot, "DONATION_URL", "https://www.buymeacoffee.com/example"), \
+             patch.object(bot, "DONATION_PROMPTS_ENABLED", True), \
+             patch.object(bot, "DONATION_PROMPT_COOLDOWN_SECONDS", 86400), \
+             patch.object(bot, "download_sync", side_effect=fake_download):
             await bot.button_handler(update, context)
         self.assertEqual(query.answers, 1)
         self.assertTrue(query.deleted)
         self.assertEqual(len(context.bot.audio), 1)
+        self.assertEqual(len(context.bot.messages), 1)
         self.assertTrue(any("Uploading" in text for text in query.edited))
         self.assertNotIn(key, bot.STATES)
 
@@ -304,6 +346,8 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             return {"title": "Reel"}, output, "mp4"
 
         with patch.object(bot, "DELIVERY_MODE", "auto"), \
+             patch.object(bot, "DONATION_URL", "https://www.buymeacoffee.com/example"), \
+             patch.object(bot, "DONATION_PROMPTS_ENABLED", True), \
              patch.object(bot, "MAX_UPLOAD_BYTES", 1), \
              patch.object(bot, "r2_is_configured", return_value=True), \
              patch.object(bot, "upload_to_r2", return_value="https://downloads.example/reel") as upload, \
@@ -313,6 +357,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         upload.assert_called_once()
         self.assertEqual(len(context.bot.messages), 1)
         self.assertIn("exceeds Telegram's upload limit", context.bot.messages[0]["text"])
+        self.assertEqual(context.bot.messages[0]["reply_markup"].inline_keyboard[1][0].text, "☕ Support this bot")
 
     async def test_button_handler_rejects_expired_or_unknown_callback(self):
         update, message = update_for()

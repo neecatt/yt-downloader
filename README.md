@@ -1,8 +1,9 @@
 # Telegram video downloader bot
 
-This bot uses `yt-dlp` and `ffmpeg` to download one video at a time per chat
-and send it back through Telegram. It supports YouTube and TikTok links sent
-as messages, plus any HTTPS source supported by yt-dlp through `/download`.
+This bot uses `yt-dlp` and `ffmpeg` to download one media item at a time per
+chat and send it back through Telegram. It supports YouTube, TikTok, Instagram,
+and Facebook links sent as messages, plus any HTTPS source supported by yt-dlp
+through `/download`.
 
 ## Run locally
 
@@ -38,6 +39,20 @@ Useful optional settings are:
 - `YTDLP_COOKIES_FILE` (Netscape-format YouTube cookies, only when needed)
 - `YTDLP_PROXY` (HTTP proxy, only when needed)
 - `YTDLP_PLAYER_CLIENT` and `YTDLP_PO_TOKEN` (advanced YouTube access)
+- `DONATION_URL` (optional HTTPS Buy Me a Coffee URL)
+- `DONATION_PROMPTS_ENABLED` (default `true`)
+- `DONATION_PROMPT_COOLDOWN_HOURS` (default `24`)
+
+Donation prompts are optional, appear only after successful deliveries, and are
+limited by the cooldown. Configure them in Railway Variables, for example:
+
+```env
+DONATION_URL=https://www.buymeacoffee.com/your-name
+DONATION_PROMPTS_ENABLED=true
+DONATION_PROMPT_COOLDOWN_HOURS=24
+```
+
+The bot does not store payment credentials, donor data, or analytics.
 
 The hosted Telegram Bot API accepts bot uploads up to 50 MB. Increasing
 `TELEGRAM_MAX_UPLOAD_MB` alone cannot change that server-side limit. For files
