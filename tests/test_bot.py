@@ -92,6 +92,7 @@ class PureFunctionTests(unittest.TestCase):
     def test_extracts_supported_https_links_and_strips_punctuation(self):
         self.assertEqual(bot.extract_url("See https://youtu.be/abc123."), "https://youtu.be/abc123")
         self.assertEqual(bot.extract_url("https://www.tiktok.com/@user/video/1"), "https://www.tiktok.com/@user/video/1")
+        self.assertEqual(bot.extract_url("https://www.instagram.com/reel/ABC123/"), "https://www.instagram.com/reel/ABC123/")
         self.assertIsNone(bot.extract_url("http://youtu.be/abc123"))
         self.assertIsNone(bot.extract_url("https://example.com/video"))
 
@@ -99,6 +100,19 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(bot.extract_url("https://example.com/video", any_https=True), "https://example.com/video")
         self.assertIsNone(bot.extract_url("https://127.0.0.1/video", any_https=True))
         self.assertIsNone(bot.extract_url("https://localhost/video", any_https=True))
+
+    def test_url_length_is_bounded(self):
+        self.assertIsNone(bot.extract_url("https://example.com/" + "a" * 5000, any_https=True))
+
+    def test_generic_https_is_opt_in(self):
+        self.assertIsNone(bot.extract_url("https://example.com/video", any_https=False))
+        self.assertEqual(bot.extract_url("https://example.com/video", any_https=True), "https://example.com/video")
+
+    def test_remote_url_rejects_private_and_non_https_targets(self):
+        with self.assertRaises(ValueError):
+            bot.validate_remote_url("https://127.0.0.1/internal")
+        with self.assertRaises(ValueError):
+            bot.validate_remote_url("http://example.com/video")
 
     def test_callback_state_is_bound_to_chat_and_user(self):
         update, _ = update_for(chat_id=10, user_id=20)
@@ -116,6 +130,13 @@ class PureFunctionTests(unittest.TestCase):
         self.assertIsNone(bot.get_state(key, update))
         self.assertNotIn(key, bot.STATES)
 
+    def test_callback_state_count_is_bounded(self):
+        update, _ = update_for()
+        with patch.object(bot, "MAX_STATE_ENTRIES", 100):
+            for index in range(101):
+                bot.save_state(update, f"https://youtu.be/{index}")
+        self.assertLessEqual(len(bot.STATES), 100)
+
     def test_format_and_filename_helpers(self):
         self.assertEqual(bot.format_duration(125), "2:05")
         self.assertEqual(bot.format_duration(None), "unknown")
@@ -130,6 +151,7 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(audio["postprocessors"][0]["preferredcodec"], "mp3")
         self.assertIn("b[height<=720][ext=mp4]", video["format"])
         self.assertEqual(best["format"], "bv*+ba/b")
+        self.assertEqual(video["max_filesize"], bot.MAX_DOWNLOAD_BYTES)
         with self.assertRaises(ValueError):
             bot.ydl_options("/tmp", "4k")
 
@@ -196,6 +218,11 @@ class PureFunctionTests(unittest.TestCase):
         self.assertIn("source rejected", bot.display_error(Exception("HTTP Error 403: Forbidden")))
         self.assertNotIn("secret", bot.display_error(Exception("secret internal stack trace")))
 
+    def test_safe_log_error_redacts_signed_urls(self):
+        result = bot.safe_log_error(Exception("failed https://cdn.example/file?token=secret-value"))
+        self.assertNotIn("secret-value", result)
+        self.assertIn("[url-redacted]", result)
+
 
 class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -220,11 +247,11 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_message_handler_rejects_unsupported_input(self):
         update, message = update_for("not a video link")
         await bot.handle_message(update, SimpleNamespace())
-        self.assertIn("YouTube or TikTok", message.replies[0][0])
+        self.assertIn("YouTube, TikTok, or Instagram", message.replies[0][0])
 
     async def test_download_command_analyzes_link_and_offers_choices(self):
         update, message = update_for()
-        context = SimpleNamespace(args=["https://example.com/video"])
+        context = SimpleNamespace(args=["https://youtu.be/abc"])
         fake_info = {"title": "Example", "duration": 65}
         with patch.object(bot, "analyze_url", return_value=fake_info):
             await bot.download_command(update, context)
@@ -234,7 +261,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_download_command_reports_analysis_failure(self):
         update, message = update_for()
-        context = SimpleNamespace(args=["https://example.com/video"])
+        context = SimpleNamespace(args=["https://youtu.be/abc"])
         with patch.object(bot, "analyze_url", side_effect=Exception("private video")):
             await bot.download_command(update, context)
         self.assertTrue(any("private" in text.lower() for text in message.edited))
@@ -254,13 +281,36 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             output.write_bytes(b"fake audio")
             return {"title": "Song"}, output, "mp3"
 
-        with patch.object(bot, "DELIVERY_MODE", "telegram"), patch.object(bot, "download_sync", side_effect=fake_download):
+        with patch.object(bot, "DELIVERY_MODE", "auto"), patch.object(bot, "download_sync", side_effect=fake_download):
             await bot.button_handler(update, context)
         self.assertEqual(query.answers, 1)
         self.assertTrue(query.deleted)
         self.assertEqual(len(context.bot.audio), 1)
         self.assertTrue(any("Uploading" in text for text in query.edited))
         self.assertNotIn(key, bot.STATES)
+
+    async def test_oversized_media_uses_r2_and_explains_telegram_limit(self):
+        update, source_message = update_for(chat_id=31, user_id=41)
+        key = bot.save_state(update, "https://www.instagram.com/reel/abc", {"title": "Reel"})
+        query = FakeQuery(f"d|720p|{key}", source_message)
+        update.callback_query = query
+        context = SimpleNamespace(bot=FakeBot())
+
+        def fake_download(url, fmt, tmpdir, progress_callback=None):
+            output = Path(tmpdir) / "abc.mp4"
+            output.write_bytes(b"large media")
+            return {"title": "Reel"}, output, "mp4"
+
+        with patch.object(bot, "DELIVERY_MODE", "auto"), \
+             patch.object(bot, "MAX_UPLOAD_BYTES", 1), \
+             patch.object(bot, "r2_is_configured", return_value=True), \
+             patch.object(bot, "upload_to_r2", return_value="https://downloads.example/reel") as upload, \
+             patch.object(bot, "download_sync", side_effect=fake_download):
+            await bot.button_handler(update, context)
+
+        upload.assert_called_once()
+        self.assertEqual(len(context.bot.messages), 1)
+        self.assertIn("exceeds Telegram's upload limit", context.bot.messages[0]["text"])
 
     async def test_button_handler_rejects_expired_or_unknown_callback(self):
         update, message = update_for()
@@ -289,10 +339,11 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_r2_link_message_contains_browser_download_button(self):
         context = SimpleNamespace(bot=FakeBot())
-        await bot.send_r2_link(context, 1, "https://downloads.example/file", {"title": "Video"}, "720p")
+        await bot.send_r2_link(context, 1, "https://downloads.example/file", {"title": "Video"}, "720p", 60 * 1024 * 1024)
         self.assertEqual(len(context.bot.documents), 0)
         self.assertEqual(len(context.bot.messages), 1)
         self.assertIn("Download file", context.bot.messages[0]["reply_markup"].inline_keyboard[0][0].text)
+        self.assertIn("exceeds Telegram's upload limit", context.bot.messages[0]["text"])
 
     async def test_auto_mode_uses_telegram_when_r2_is_not_configured(self):
         with patch.object(bot, "R2_ENDPOINT_URL", "your-endpoint"), patch.object(bot, "R2_ACCESS_KEY_ID", "your-access-key"), patch.object(bot, "R2_SECRET_ACCESS_KEY", "your-secret"), patch.object(bot, "R2_BUCKET_NAME", "your-bucket"):

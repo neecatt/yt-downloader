@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import secrets
+import socket
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -57,7 +58,9 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MAX_UPLOAD_BYTES = int(os.getenv("TELEGRAM_MAX_UPLOAD_MB", "49")) * 1024 * 1024
 MAX_DOWNLOAD_BYTES = int(os.getenv("MAX_DOWNLOAD_MB", "2048")) * 1024 * 1024
+MAX_URL_LENGTH = max(256, int(os.getenv("MAX_URL_LENGTH", "4096")))
 STATE_TTL_SECONDS = int(os.getenv("CALLBACK_STATE_TTL_SECONDS", "1800"))
+MAX_STATE_ENTRIES = max(100, int(os.getenv("MAX_STATE_ENTRIES", "10000")))
 MAX_WORKERS = max(1, int(os.getenv("DOWNLOAD_WORKERS", "2")))
 FRAGMENT_WORKERS = max(1, int(os.getenv("FRAGMENT_WORKERS", "4")))
 R2_UPLOAD_CONCURRENCY = max(1, int(os.getenv("R2_UPLOAD_CONCURRENCY", "8")))
@@ -72,6 +75,7 @@ YTDLP_JS_RUNTIME = os.getenv("YTDLP_JS_RUNTIME")
 TELEGRAM_API_BASE_URL = os.getenv("TELEGRAM_API_BASE_URL")
 TELEGRAM_API_FILE_BASE_URL = os.getenv("TELEGRAM_API_FILE_BASE_URL")
 DELIVERY_MODE = os.getenv("DELIVERY_MODE", "telegram").lower()
+ALLOW_GENERIC_HTTPS = os.getenv("ALLOW_GENERIC_HTTPS", "false").lower() in {"1", "true", "yes"}
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
 R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL") or (f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else None)
 R2_API_TOKEN = os.getenv("R2_API_TOKEN")
@@ -86,7 +90,11 @@ R2_PRESIGNED_URL_TTL = max(60, int(os.getenv("R2_PRESIGNED_URL_TTL_SECONDS", "86
 # Telegram callback data is limited to 64 bytes. A random opaque key keeps
 # URLs and user input out of callback data and prevents cross-chat reuse.
 URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
-SUPPORTED_CHAT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"}
+SUPPORTED_CHAT_HOSTS = {
+    "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be",
+    "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
+    "instagram.com", "www.instagram.com",
+}
 
 
 @dataclass(slots=True)
@@ -118,8 +126,10 @@ def prepare_cookie_file() -> str | None:
             raise ValueError("cookie data is not in Netscape format")
     except (ValueError, base64.binascii.Error) as exc:
         raise RuntimeError("YTDLP_COOKIES_B64 must be valid base64 Netscape cookies") from exc
-    cookie_path = Path(tempfile.gettempdir()) / "yt-dlp-youtube-cookies.txt"
-    cookie_path.write_bytes(cookie_data)
+    fd, cookie_name = tempfile.mkstemp(prefix="yt-dlp-cookies-", suffix=".txt")
+    cookie_path = Path(cookie_name)
+    with os.fdopen(fd, "wb") as cookie_file:
+        cookie_file.write(cookie_data)
     cookie_path.chmod(0o600)
     return str(cookie_path)
 
@@ -133,10 +143,15 @@ def extract_url(text: str, *, any_https: bool = False) -> str | None:
     if not match:
         return None
     candidate = match.group(0).rstrip(".,!?)]}")
-    parsed = urlparse(candidate)
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+    if len(candidate) > MAX_URL_LENGTH:
         return None
-    host = parsed.hostname.lower().rstrip(".") if parsed.hostname else ""
+    parsed = urlparse(candidate)
+    try:
+        host = parsed.hostname.lower().rstrip(".") if parsed.hostname else ""
+    except ValueError:
+        return None
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or not host:
+        return None
     try:
         host_ip = ipaddress.ip_address(host)
     except ValueError:
@@ -148,10 +163,43 @@ def extract_url(text: str, *, any_https: bool = False) -> str | None:
     return None
 
 
+def validate_remote_url(url: str) -> None:
+    """Reject URLs resolving to private, local, or otherwise non-public IPs."""
+    parsed = urlparse(url)
+    host = parsed.hostname
+    if parsed.scheme != "https" or not host:
+        raise ValueError("Only HTTPS URLs are allowed")
+    try:
+        addresses = {
+            ipaddress.ip_address(result[4][0])
+            for result in socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
+        }
+    except (OSError, ValueError):
+        raise ValueError("The source host could not be resolved safely") from None
+    if not addresses or any(not address.is_global for address in addresses):
+        raise ValueError("The source host resolves to a non-public network")
+
+
+def safe_log_url(url: str) -> str:
+    """Log only the origin/path, never query parameters or fragments."""
+    parsed = urlsplit(url)
+    path = parsed.path[:160]
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def safe_log_error(exc: Exception) -> str:
+    """Redact signed URLs and bound exception text before logging."""
+    return re.sub(r"https?://[^\s]+", "[url-redacted]", str(exc))[:500]
+
+
 def prune_states() -> None:
     cutoff = time.monotonic() - STATE_TTL_SECONDS
     for key, state in list(STATES.items()):
         if state.created_at < cutoff:
+            STATES.pop(key, None)
+    if len(STATES) > MAX_STATE_ENTRIES:
+        excess = len(STATES) - MAX_STATE_ENTRIES
+        for key, _ in sorted(STATES.items(), key=lambda item: item[1].created_at)[:excess]:
             STATES.pop(key, None)
 
 
@@ -168,6 +216,7 @@ def save_state(update: Update, url: str, info: dict[str, Any] | None = None) -> 
         title=(info or {}).get("title", "Video"),
         duration=(info or {}).get("duration"),
     )
+    prune_states()
     return key
 
 
@@ -270,6 +319,7 @@ def ydl_base_options(tmpdir: str, progress_callback: ProgressCallback | None = N
         "paths": {"home": tmpdir},
         "outtmpl": {"default": "%(id)s.%(ext)s"},
         "merge_output_format": "mp4",
+        "max_filesize": MAX_DOWNLOAD_BYTES,
     }
     if YTDLP_EFFECTIVE_COOKIES_FILE:
         options["cookiefile"] = YTDLP_EFFECTIVE_COOKIES_FILE
@@ -325,6 +375,7 @@ def ydl_options(tmpdir: str, fmt: str, progress_callback: ProgressCallback | Non
 
 
 def analyze_url(url: str) -> dict[str, Any]:
+    validate_remote_url(url)
     options = ydl_base_options(tempfile.gettempdir())
     options.update({"quiet": True, "no_warnings": True, "noplaylist": True, "extract_flat": True})
     with yt_dlp.YoutubeDL(options) as ydl:
@@ -335,6 +386,7 @@ def analyze_url(url: str) -> dict[str, Any]:
 
 
 def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCallback | None = None) -> tuple[dict[str, Any], Path, str]:
+    validate_remote_url(url)
     options = ydl_options(tmpdir, fmt, progress_callback)
     for attempt in range(2):
         try:
@@ -389,7 +441,7 @@ def display_error(exc: Exception) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
-        "Send a YouTube or TikTok link, or use /download <https-url>.\n\n"
+        "Send a YouTube, TikTok, or Instagram link, or use /download <https-url>.\n\n"
         "Choose a quality, then I’ll download it and send it back."
     )
 
@@ -414,7 +466,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not context.args:
         await update.effective_message.reply_text("Usage: /download <https-url>")
         return
-    url = extract_url(context.args[0], any_https=True)
+    url = extract_url(context.args[0], any_https=ALLOW_GENERIC_HTTPS)
     if not url:
         await update.effective_message.reply_text("Please provide one valid HTTPS video URL.")
         return
@@ -424,7 +476,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await status.delete()
         await make_choice(update, url, info)
     except Exception as exc:
-        LOG.info("analysis failed for %s: %s", url, exc)
+        LOG.info("analysis failed for %s: %s", safe_log_url(url), safe_log_error(exc))
         await status.edit_text(display_error(exc))
 
 
@@ -432,7 +484,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.effective_message.text or ""
     url = extract_url(text)
     if not url:
-        await update.effective_message.reply_text("Please send a YouTube or TikTok HTTPS link.")
+        await update.effective_message.reply_text("Please send a YouTube, TikTok, or Instagram HTTPS link.")
         return
     await make_choice(update, url)
 
@@ -453,12 +505,24 @@ async def send_file(context: ContextTypes.DEFAULT_TYPE, chat_id: int, filename: 
             await context.bot.send_document(chat_id=chat_id, document=media, filename=name, caption=caption, read_timeout=300, write_timeout=300)
 
 
-async def send_r2_link(context: ContextTypes.DEFAULT_TYPE, chat_id: int, url: str, info: dict[str, Any], fmt: str) -> None:
+async def send_r2_link(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    url: str,
+    info: dict[str, Any],
+    fmt: str,
+    size_bytes: int | None = None,
+) -> None:
     title = info.get("title", "Downloaded file")
+    size_text = f"{size_bytes / 1024 / 1024:.1f} MB" if size_bytes else "large"
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬇️ Download file", url=url)]])
     await context.bot.send_message(
         chat_id=chat_id,
-        text=f"✅ Ready: {title[:700]}\nFormat: {fmt}\n\nThe button opens a temporary download link in your phone's browser.",
+        text=(
+            f"✅ Ready: {title[:700]}\nFormat: {fmt}\nSize: {size_text}\n\n"
+            "The media exceeds Telegram's upload limit, so I’m giving you a "
+            "temporary download link instead."
+        ),
         reply_markup=keyboard,
     )
 
@@ -555,23 +619,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             with tempfile.TemporaryDirectory(prefix="ytbot-") as tmpdir:
                 loop = asyncio.get_running_loop()
                 info, filename, extension = await run_download_with_progress(loop, state.url, fmt, tmpdir, query)
+                file_size = filename.stat().st_size
                 if DELIVERY_MODE == "r2":
                     await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
                     download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
-                    await send_r2_link(context, state.chat_id, download_url, info, fmt)
-                elif DELIVERY_MODE == "auto" and r2_is_configured():
+                    await send_r2_link(context, state.chat_id, download_url, info, fmt, file_size)
+                elif DELIVERY_MODE == "auto" and file_size > MAX_UPLOAD_BYTES and r2_is_configured():
                     await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
                     download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
-                    await send_r2_link(context, state.chat_id, download_url, info, fmt)
-                else:
+                    await send_r2_link(context, state.chat_id, download_url, info, fmt, file_size)
+                elif file_size <= MAX_UPLOAD_BYTES:
                     await query.edit_message_text("⬆️ Uploading to Telegram…\nDownload: 100%")
                     await send_file(context, state.chat_id, filename, info, extension, fmt)
+                else:
+                    raise ValueError("The file exceeds Telegram's upload limit and cloud delivery is not configured")
                 await query.delete_message()
         except (TelegramError, BadRequest):
             LOG.exception("Telegram upload failed for chat %s", state.chat_id)
             await query.edit_message_text("Telegram could not accept the file. Try a lower quality.")
         except Exception as exc:
-            LOG.info("download failed for %s: %s", state.url, exc)
+            LOG.info("download failed for %s: %s", safe_log_url(state.url), safe_log_error(exc))
             await query.edit_message_text(f"❌ {display_error(exc)}")
         finally:
             STATES.pop(key, None)
