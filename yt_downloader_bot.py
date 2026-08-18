@@ -8,6 +8,7 @@ calls remain asynchronous.
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import ipaddress
 import logging
@@ -62,6 +63,7 @@ FRAGMENT_WORKERS = max(1, int(os.getenv("FRAGMENT_WORKERS", "4")))
 R2_UPLOAD_CONCURRENCY = max(1, int(os.getenv("R2_UPLOAD_CONCURRENCY", "8")))
 HTTP_CHUNK_SIZE_MB = max(1, int(os.getenv("HTTP_CHUNK_SIZE_MB", "10")))
 YTDLP_COOKIES_FILE = os.getenv("YTDLP_COOKIES_FILE")
+YTDLP_COOKIES_B64 = os.getenv("YTDLP_COOKIES_B64")
 YTDLP_PROXY = os.getenv("YTDLP_PROXY")
 YTDLP_PLAYER_CLIENT = os.getenv("YTDLP_PLAYER_CLIENT")
 YTDLP_PO_TOKEN = os.getenv("YTDLP_PO_TOKEN")
@@ -100,6 +102,28 @@ STATES: dict[str, LinkState] = {}
 DOWNLOAD_LOCKS: dict[int, asyncio.Lock] = {}
 EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="download")
 ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def prepare_cookie_file() -> str | None:
+    """Materialize optional Netscape cookies from a deployment secret."""
+    if not YTDLP_COOKIES_B64:
+        return YTDLP_COOKIES_FILE
+    try:
+        # Railway values are sometimes pasted with visual line wrapping.
+        # Whitespace is not part of base64, so remove it before decoding.
+        encoded = b"".join(YTDLP_COOKIES_B64.encode("ascii").split())
+        cookie_data = base64.b64decode(encoded, validate=True)
+        if not cookie_data.startswith((b"# HTTP Cookie File", b"# Netscape HTTP Cookie File")):
+            raise ValueError("cookie data is not in Netscape format")
+    except (ValueError, base64.binascii.Error) as exc:
+        raise RuntimeError("YTDLP_COOKIES_B64 must be valid base64 Netscape cookies") from exc
+    cookie_path = Path(tempfile.gettempdir()) / "yt-dlp-youtube-cookies.txt"
+    cookie_path.write_bytes(cookie_data)
+    cookie_path.chmod(0o600)
+    return str(cookie_path)
+
+
+YTDLP_EFFECTIVE_COOKIES_FILE = prepare_cookie_file()
 
 
 def extract_url(text: str, *, any_https: bool = False) -> str | None:
@@ -246,8 +270,8 @@ def ydl_base_options(tmpdir: str, progress_callback: ProgressCallback | None = N
         "outtmpl": {"default": "%(id)s.%(ext)s"},
         "merge_output_format": "mp4",
     }
-    if YTDLP_COOKIES_FILE:
-        options["cookiefile"] = YTDLP_COOKIES_FILE
+    if YTDLP_EFFECTIVE_COOKIES_FILE:
+        options["cookiefile"] = YTDLP_EFFECTIVE_COOKIES_FILE
     if YTDLP_PROXY:
         options["proxy"] = YTDLP_PROXY
     if YTDLP_JS_RUNTIME:

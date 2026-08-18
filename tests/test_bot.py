@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import tempfile
 import unittest
 from pathlib import Path
@@ -131,6 +132,22 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(best["format"], "bv*+ba/b")
         with self.assertRaises(ValueError):
             bot.ydl_options("/tmp", "4k")
+
+    def test_cookie_file_from_base64_requires_netscape_format(self):
+        original_b64 = bot.YTDLP_COOKIES_B64
+        original_file = bot.YTDLP_EFFECTIVE_COOKIES_FILE
+        try:
+            bot.YTDLP_COOKIES_B64 = "bm90IGNvb2tpZXM="
+            with self.assertRaises(RuntimeError):
+                bot.prepare_cookie_file()
+            cookie_header = "# Netscape HTTP Cookie File\n"
+            encoded = base64.b64encode(cookie_header.encode()).decode()
+            bot.YTDLP_COOKIES_B64 = f" {encoded[:8]}\n{encoded[8:]} "
+            cookie_path = bot.prepare_cookie_file()
+            self.assertTrue(Path(cookie_path).read_bytes().startswith(b"# Netscape HTTP Cookie File"))
+        finally:
+            bot.YTDLP_COOKIES_B64 = original_b64
+            bot.YTDLP_EFFECTIVE_COOKIES_FILE = original_file
 
     def test_progress_text_renders_percentage_speed_and_eta(self):
         text = bot.progress_text(

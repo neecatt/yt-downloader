@@ -94,22 +94,26 @@ docker build -t yt-downloader .
 docker run --rm -e TELEGRAM_BOT_TOKEN='your-token' yt-downloader
 ```
 
-For Fly.io, keep credentials out of `fly.toml` and set them as secrets:
+For Railway, deploy this repository with the Dockerfile and add credentials in
+the service's Variables tab (do not commit `.env`):
 
-```sh
-fly secrets set \
-  TELEGRAM_BOT_TOKEN='your-token' \
-  DELIVERY_MODE='r2' \
-  R2_ENDPOINT_URL='https://your-account-id.r2.cloudflarestorage.com' \
-  R2_ACCESS_KEY_ID='your-access-key-id' \
-  R2_SECRET_ACCESS_KEY='your-secret-access-key' \
-  R2_BUCKET_NAME='your-bucket-name'
-fly deploy
+```env
+TELEGRAM_BOT_TOKEN=your-token
+DELIVERY_MODE=r2
+R2_ENDPOINT_URL=https://your-account-id.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=your-access-key-id
+R2_SECRET_ACCESS_KEY=your-secret-access-key
+R2_BUCKET_NAME=your-bucket-name
 ```
+
+Railway should detect the Dockerfile automatically. No HTTP port is required:
+the bot uses Telegram long polling. Watch deploy logs for `Bot is running`.
 
 Never commit the bot token. If the old token was ever active, revoke it in
 BotFather and issue a new one.
 
 For restricted or bot-challenged videos, use a supported JavaScript runtime
-first. Cookies should only be used for content your account is authorized to
-access, and should never be committed or copied into a public deployment.
+first. On Railway, add `YTDLP_COOKIES_B64` as a Variable containing the
+base64-encoded Netscape cookie file. Cookies should only be used for content
+your account is authorized to access, and should never be committed or copied
+into a public deployment.
