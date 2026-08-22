@@ -27,7 +27,12 @@ frontend service.
 - `ADMIN_ACTIVITY_PATH`: optional API path, default `/admin/activity`.
 - `ADMIN_API_TOKEN`: server-only bearer token for the activity API.
 
-The backend exposes a protected PostgreSQL-backed activity API. The frontend expects `GET /admin/activity` to return:
+The backend exposes a protected PostgreSQL-backed activity API. The frontend
+uses `GET /admin/activity` to load activity and `DELETE /admin/activity` to
+remove explicitly selected event IDs. The dashboard requires confirmation
+before deleting logs and never sends the backend token to the browser.
+
+The frontend expects `GET /admin/activity` to return:
 
 ```json
 {

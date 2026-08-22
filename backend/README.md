@@ -64,8 +64,13 @@ it, or `8080` locally:
 ```text
 GET /health
 GET /admin/activity?page=1&pageSize=25&status=completed
+DELETE /admin/activity
 Authorization: Bearer <ADMIN_API_TOKEN>
 ```
+
+The delete endpoint accepts a JSON body such as `{"ids":["<event-id>"]}`.
+It only deletes the explicitly selected events, requires the same bearer token,
+and accepts at most 100 IDs per request.
 
 Example local value:
 
