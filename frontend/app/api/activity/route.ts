@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchActivity } from "@/lib/activity";
+import { deleteActivity, fetchActivity } from "@/lib/activity";
 import { hasValidSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -15,4 +15,15 @@ export async function GET(request: NextRequest) {
   };
   try { return NextResponse.json(await fetchActivity(filters), { headers: { "Cache-Control": "no-store" } }); }
   catch { return NextResponse.json({ error: "Activity service unavailable" }, { status: 502 }); }
+}
+
+export async function DELETE(request: NextRequest) {
+  if (!(await hasValidSession())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    const body = await request.json();
+    if (!Array.isArray(body?.ids)) return NextResponse.json({ error: "Invalid IDs" }, { status: 400 });
+    return NextResponse.json(await deleteActivity(body.ids), { headers: { "Cache-Control": "no-store" } });
+  } catch {
+    return NextResponse.json({ error: "Could not delete activity" }, { status: 502 });
+  }
 }

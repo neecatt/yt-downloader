@@ -4,7 +4,7 @@ import hmac
 import os
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import Body, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from . import activity_store
@@ -33,5 +33,18 @@ def create_app() -> FastAPI:
         except Exception:
             raise HTTPException(status_code=503, detail="Activity database unavailable") from None
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.delete("/admin/activity")
+    async def delete_activity(payload: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)) -> JSONResponse:
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        event_ids = payload.get("ids")
+        if not isinstance(event_ids, list) or not event_ids or len(event_ids) > 100 or not all(isinstance(event_id, str) for event_id in event_ids):
+            raise HTTPException(status_code=400, detail="Provide between 1 and 100 event IDs")
+        try:
+            deleted = activity_store.delete_events(event_ids)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Activity database unavailable") from None
+        return JSONResponse({"deleted": deleted}, headers={"Cache-Control": "no-store"})
 
     return app

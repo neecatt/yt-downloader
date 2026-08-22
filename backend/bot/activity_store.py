@@ -4,6 +4,7 @@ import os
 import threading
 import uuid
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -91,6 +92,17 @@ def update_event(event_id: str | None, *, status: str, fmt: str | None = None, d
             connection.execute(f"UPDATE activity_events SET {', '.join(fields)} WHERE id = %s", values)
     except Exception:
         LOG.warning("Could not update activity event", exc_info=True)
+
+
+def delete_events(event_ids: list[str]) -> int:
+    """Delete only explicitly selected event IDs."""
+    ids = [event_id for event_id in dict.fromkeys(event_ids) if re.fullmatch(r"[a-f0-9]{32}", event_id)]
+    if not ids or not enabled():
+        return 0
+    placeholders = ", ".join(["%s"] * len(ids))
+    with _lock, _connect() as connection:
+        cursor = connection.execute(f"DELETE FROM activity_events WHERE id IN ({placeholders})", ids)
+        return cursor.rowcount
 
 
 def query_events(*, q: str | None = None, platform: str | None = None, status: str | None = None, page: int = 1, page_size: int = 25) -> dict[str, Any]:
