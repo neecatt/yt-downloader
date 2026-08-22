@@ -104,5 +104,8 @@ def query_events(*, q: str | None = None, platform: str | None = None, status: s
         total = connection.execute(f"SELECT COUNT(*) FROM activity_events {where}", values).fetchone()[0]
         rows = connection.execute(f"SELECT * FROM activity_events {where} ORDER BY created_at DESC LIMIT %s OFFSET %s", [*values, page_size, (page - 1) * page_size]).fetchall()
         summary = connection.execute(f"SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status = 'completed') AS completed, COUNT(*) FILTER (WHERE status = 'failed') AS failed, COUNT(DISTINCT COALESCE(telegram_username, telegram_display_name)) AS active_users, COALESCE(SUM(size_bytes), 0) AS total_bytes FROM activity_events {where}", values).fetchone()
-    events = [{"id": row[0], "telegramUsername": row[1], "telegramDisplayName": row[2], "sourceUrl": row[4], "title": row[5], "platform": row[6], "action": row[7], "format": row[8], "status": row[9], "delivery": row[10], "sizeBytes": row[11], "durationMs": row[12], "error": row[13], "createdAt": row[14].isoformat()} for row in rows]
-    return {"events": events, "summary": {"total": summary[0] or 0, "completed": summary[1] or 0, "failed": summary[2] or 0, "activeUsers": summary[3] or 0, "totalBytes": summary[4] or 0}, "page": page, "pageSize": page_size, "total": total}
+    def as_int(value: Any, default: int | None = None) -> int | None:
+        return default if value is None else int(value)
+
+    events = [{"id": row[0], "telegramUsername": row[1], "telegramDisplayName": row[2], "sourceUrl": row[4], "title": row[5], "platform": row[6], "action": row[7], "format": row[8], "status": row[9], "delivery": row[10], "sizeBytes": as_int(row[11]), "durationMs": as_int(row[12]), "error": row[13], "createdAt": row[14].isoformat()} for row in rows]
+    return {"events": events, "summary": {"total": as_int(summary[0], 0), "completed": as_int(summary[1], 0), "failed": as_int(summary[2], 0), "activeUsers": as_int(summary[3], 0), "totalBytes": as_int(summary[4], 0)}, "page": page, "pageSize": page_size, "total": as_int(total, 0)}
