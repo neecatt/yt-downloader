@@ -12,14 +12,19 @@ python3.12 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 export TELEGRAM_BOT_TOKEN='your-token-from-botfather'
-python yt_downloader_bot.py
+python main.py
 ```
 
-Run the automated suite with:
+If using the existing `tgbot_env`, activate it with
+`. tgbot_env/bin/activate` instead. Run these commands from inside `backend`.
+
+Run the automated suite from the backend directory with:
 
 ```sh
 TELEGRAM_BOT_TOKEN=test-token python -m unittest discover -s tests -v
 ```
+
+From the repository root, use `python -m unittest discover -s backend/tests -v`.
 
 `ffmpeg` must be installed and available on `PATH` for MP3 conversion and
 separate video/audio streams. Current yt-dlp YouTube extraction also benefits
@@ -42,6 +47,33 @@ Useful optional settings are:
 - `DONATION_URL` (optional HTTPS Buy Me a Coffee URL)
 - `DONATION_PROMPTS_ENABLED` (default `true`)
 - `DONATION_PROMPT_COOLDOWN_HOURS` (default `24`)
+- `ADMIN_API_TOKEN` (enables the protected activity API when set)
+- `ADMIN_API_ENABLED` (default `true` when configured; set `false` to disable)
+- `DATABASE_URL` (PostgreSQL connection string for activity logging)
+
+## Admin activity API
+
+The bot records download activity in PostgreSQL without storing Telegram numeric
+user IDs. It stores the username/display-name snapshot, source link, platform,
+format, status, delivery method, size, duration, error, and timestamps.
+
+Set `ADMIN_API_TOKEN` in the backend service and use the same value as the
+frontend's `ADMIN_API_TOKEN`. The API listens on `PORT` when Railway provides
+it, or `8080` locally:
+
+```text
+GET /health
+GET /admin/activity?page=1&pageSize=25&status=completed
+Authorization: Bearer <ADMIN_API_TOKEN>
+```
+
+Example local value:
+
+```env
+DATABASE_URL=postgresql://postgres:password@localhost:5432/yt_downloader
+```
+
+On Railway, use the PostgreSQL service's private `DATABASE_URL` reference.
 
 Donation prompts are optional, appear only after successful deliveries, and are
 limited by the cooldown. Configure them in Railway Variables, for example:
@@ -109,8 +141,9 @@ docker build -t yt-downloader .
 docker run --rm -e TELEGRAM_BOT_TOKEN='your-token' yt-downloader
 ```
 
-For Railway, deploy this repository with the Dockerfile and add credentials in
-the service's Variables tab (do not commit `.env`):
+For Railway, create a backend service with the service root set to `backend`
+(or configure the Dockerfile path as `backend/Dockerfile`) and add credentials
+in the service's Variables tab (do not commit `.env`):
 
 ```env
 TELEGRAM_BOT_TOKEN=your-token

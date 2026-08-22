@@ -11,7 +11,8 @@ RUN python3 -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
-COPY yt_downloader_bot.py ./
+COPY main.py ./
+COPY bot ./bot
 
 # Do not run the bot as root, and flush logs immediately for deployment output.
 RUN useradd --create-home --uid 10001 appuser && \
@@ -22,5 +23,7 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH" \
     YTDLP_JS_RUNTIME=node
 
+EXPOSE 8080
+
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python3", "yt_downloader_bot.py"]
+CMD ["python3", "main.py"]

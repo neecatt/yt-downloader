@@ -8,7 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import yt_downloader_bot as bot
+try:
+    import backend.main as bot
+except ModuleNotFoundError:
+    # Also support running discovery from inside the backend service directory.
+    import main as bot
 
 
 class FakeMessage:
@@ -278,6 +282,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         update, message = update_for("Download https://youtu.be/abc")
         await bot.handle_message(update, SimpleNamespace())
         self.assertEqual(len(message.replies), 1)
+        self.assertNotIn("Duration:", message.replies[0][0])
         markup = message.replies[0][1]
         callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
         self.assertIn("d|720p", " ".join(callbacks))
