@@ -9,7 +9,7 @@ primary_region = 'fra'
 [build]
 
 [processes]
-  app = "python yt_downloader_bot.py"
+  app = "python main.py"
 
 [[vm]]
   memory = '1gb'

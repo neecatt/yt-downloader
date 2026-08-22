@@ -8,16 +8,14 @@ calls remain asynchronous.
 from __future__ import annotations
 
 import asyncio
-import base64
 import concurrent.futures
-import ipaddress
 import logging
 import os
 import re
 import secrets
-import socket
 import tempfile
 import time
+import threading
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +23,26 @@ from typing import Any, Callable
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 import yt_dlp
+try:
+    from .bot.cookies import prepare_cookie_file as _prepare_cookie_file
+    from .bot.media import display_error, format_duration, progress_text, safe_filename
+    from .bot.security import (
+        extract_url as _extract_url,
+        safe_log_error,
+        safe_log_url,
+        validate_donation_url,
+        validate_remote_url,
+    )
+except ImportError:  # Supports running `python main.py` in backend.
+    from bot.cookies import prepare_cookie_file as _prepare_cookie_file
+    from bot.media import display_error, format_duration, progress_text, safe_filename
+    from bot.security import (
+        extract_url as _extract_url,
+        safe_log_error,
+        safe_log_url,
+        validate_donation_url,
+        validate_remote_url,
+    )
 try:
     from dotenv import load_dotenv
 except ImportError:  # Keeps the bot usable in the old local virtualenv.
@@ -51,7 +69,7 @@ from telegram.ext import (
     filters,
 )
 
-LOG = logging.getLogger("yt_downloader_bot")
+LOG = logging.getLogger("downloader_bot")
 
 load_dotenv()
 
@@ -89,27 +107,19 @@ if R2_API_TOKEN and ":" in R2_API_TOKEN:
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
 R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL")
 R2_PRESIGNED_URL_TTL = max(60, int(os.getenv("R2_PRESIGNED_URL_TTL_SECONDS", "86400")))
+ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "")
+ADMIN_API_ENABLED = os.getenv("ADMIN_API_ENABLED", "true").lower() in {"1", "true", "yes"}
+ADMIN_API_HOST = os.getenv("ADMIN_API_HOST", "0.0.0.0")
+ADMIN_API_PORT = int(os.getenv("ADMIN_API_PORT", os.getenv("PORT", "8080")))
 
 # Telegram callback data is limited to 64 bytes. A random opaque key keeps
 # URLs and user input out of callback data and prevents cross-chat reuse.
-URL_RE = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
 SUPPORTED_CHAT_HOSTS = {
     "youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be",
     "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
-    "instagram.com", "www.instagram.com",
-    "facebook.com", "www.facebook.com", "m.facebook.com", "web.facebook.com", "fb.watch",
+    "instagram.com", "www.instagram.com", "facebook.com", "www.facebook.com",
+    "m.facebook.com", "web.facebook.com", "fb.watch",
 }
-
-
-def validate_donation_url(value: str) -> str | None:
-    """Accept only a plain HTTPS donation URL without embedded credentials."""
-    if not value:
-        return None
-    parsed = urlparse(value)
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
-        LOG.warning("DONATION_URL ignored because it is not a valid HTTPS URL")
-        return None
-    return value
 
 
 DONATION_URL = validate_donation_url(DONATION_URL_RAW)
@@ -123,6 +133,7 @@ class LinkState:
     created_at: float
     title: str = "Video"
     duration: int | None = None
+    activity_id: str | None = None
 
 
 STATES: dict[str, LinkState] = {}
@@ -133,82 +144,14 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 def prepare_cookie_file() -> str | None:
-    """Materialize optional Netscape cookies from a deployment secret."""
-    if not YTDLP_COOKIES_B64:
-        return YTDLP_COOKIES_FILE
-    try:
-        # Railway values are sometimes pasted with visual line wrapping.
-        # Whitespace is not part of base64, so remove it before decoding.
-        encoded = b"".join(YTDLP_COOKIES_B64.encode("ascii").split())
-        cookie_data = base64.b64decode(encoded, validate=True)
-        if not cookie_data.startswith((b"# HTTP Cookie File", b"# Netscape HTTP Cookie File")):
-            raise ValueError("cookie data is not in Netscape format")
-    except (ValueError, base64.binascii.Error) as exc:
-        raise RuntimeError("YTDLP_COOKIES_B64 must be valid base64 Netscape cookies") from exc
-    fd, cookie_name = tempfile.mkstemp(prefix="yt-dlp-cookies-", suffix=".txt")
-    cookie_path = Path(cookie_name)
-    with os.fdopen(fd, "wb") as cookie_file:
-        cookie_file.write(cookie_data)
-    cookie_path.chmod(0o600)
-    return str(cookie_path)
+    return _prepare_cookie_file(YTDLP_COOKIES_B64, YTDLP_COOKIES_FILE)
 
 
 YTDLP_EFFECTIVE_COOKIES_FILE = prepare_cookie_file()
 
 
 def extract_url(text: str, *, any_https: bool = False) -> str | None:
-    """Return one clean, validated URL from a Telegram message."""
-    match = URL_RE.search(text)
-    if not match:
-        return None
-    candidate = match.group(0).rstrip(".,!?)]}")
-    if len(candidate) > MAX_URL_LENGTH:
-        return None
-    parsed = urlparse(candidate)
-    try:
-        host = parsed.hostname.lower().rstrip(".") if parsed.hostname else ""
-    except ValueError:
-        return None
-    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password or not host:
-        return None
-    try:
-        host_ip = ipaddress.ip_address(host)
-    except ValueError:
-        host_ip = None
-    if host in {"localhost", "localhost.localdomain"} or (host_ip and (host_ip.is_private or host_ip.is_loopback or host_ip.is_link_local)):
-        return None
-    if any_https or host in SUPPORTED_CHAT_HOSTS:
-        return candidate
-    return None
-
-
-def validate_remote_url(url: str) -> None:
-    """Reject URLs resolving to private, local, or otherwise non-public IPs."""
-    parsed = urlparse(url)
-    host = parsed.hostname
-    if parsed.scheme != "https" or not host:
-        raise ValueError("Only HTTPS URLs are allowed")
-    try:
-        addresses = {
-            ipaddress.ip_address(result[4][0])
-            for result in socket.getaddrinfo(host, parsed.port or 443, type=socket.SOCK_STREAM)
-        }
-    except (OSError, ValueError):
-        raise ValueError("The source host could not be resolved safely") from None
-    if not addresses or any(not address.is_global for address in addresses):
-        raise ValueError("The source host resolves to a non-public network")
-
-
-def safe_log_url(url: str) -> str:
-    """Log only the origin/path, never query parameters or fragments."""
-    parsed = urlsplit(url)
-    path = parsed.path[:160]
-    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
-
-
-def safe_log_error(exc: Exception) -> str:
-    """Redact signed URLs and bound exception text before logging."""
-    return re.sub(r"https?://[^\s]+", "[url-redacted]", str(exc))[:500]
+    return _extract_url(text, any_https=any_https, max_length=MAX_URL_LENGTH)
 
 
 def prune_states() -> None:
@@ -227,6 +170,7 @@ def save_state(update: Update, url: str, info: dict[str, Any] | None = None) -> 
     message = update.effective_message
     user = update.effective_user
     key = secrets.token_urlsafe(9)
+    activity_id = _create_activity_event(update, url, info)
     STATES[key] = LinkState(
         url=url,
         chat_id=update.effective_chat.id,
@@ -234,9 +178,51 @@ def save_state(update: Update, url: str, info: dict[str, Any] | None = None) -> 
         created_at=time.monotonic(),
         title=(info or {}).get("title", "Video"),
         duration=(info or {}).get("duration"),
+        activity_id=activity_id,
     )
     prune_states()
     return key
+
+
+def _activity_platform(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    if "youtube" in host or host == "youtu.be": return "youtube"
+    if "instagram" in host: return "instagram"
+    if "facebook" in host or host == "fb.watch": return "facebook"
+    if "tiktok" in host: return "tiktok"
+    return "other"
+
+
+def _create_activity_event(update: Update, url: str, info: dict[str, Any] | None) -> str | None:
+    try:
+        try:
+            from .bot import activity_store
+        except ImportError:
+            from bot import activity_store
+        if not activity_store.enabled():
+            return None
+        user = update.effective_user
+        chat = update.effective_chat
+        return activity_store.create_event(
+            username=f"@{getattr(user, 'username', '')}" if getattr(user, "username", None) else None,
+            display_name=getattr(user, "full_name", None) if user else None,
+            chat_type=getattr(chat, "type", None) if chat else None,
+            source_url=url,
+            title=(info or {}).get("title"),
+            platform=_activity_platform(url),
+            action="download",
+        )
+    except Exception:
+        LOG.warning("Could not initialize activity event", exc_info=True)
+        return None
+
+
+def _update_activity(event_id: str | None, **kwargs: Any) -> None:
+    try:
+        from .bot import activity_store
+    except ImportError:
+        from bot import activity_store
+    activity_store.update_event(event_id, **kwargs)
 
 
 def get_state(key: str, update: Update) -> LinkState | None:
@@ -250,18 +236,6 @@ def get_state(key: str, update: Update) -> LinkState | None:
         STATES.pop(key, None)
         return None
     return state
-
-
-def format_duration(seconds: int | float | None) -> str:
-    if not seconds:
-        return "unknown"
-    seconds = int(seconds)
-    return f"{seconds // 60}:{seconds % 60:02d}"
-
-
-def safe_filename(title: str, extension: str) -> str:
-    cleaned = re.sub(r"[^\w\-. ]+", "", title, flags=re.UNICODE).strip(" .") or "download"
-    return f"{cleaned[:80]}.{extension}"
 
 
 def support_is_configured() -> bool:
@@ -477,29 +451,6 @@ def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCa
     raise RuntimeError("download failed")
 
 
-def display_error(exc: Exception) -> str:
-    text = str(exc).lower()
-    if "private" in text or "login" in text or "cannot parse data" in text or "requires authentication" in text:
-        return "This media is private or requires login. The bot can only access publicly available posts and accounts."
-    if "age" in text and "restrict" in text:
-        return "This video is age-restricted and cannot be downloaded here."
-    if "not available in your country" in text or "geo-restricted" in text or "geo restriction" in text:
-        return "This video is unavailable in the downloader's region."
-    if "sign in to confirm" in text or "not a bot" in text or "captcha" in text or "javascript" in text or "po token" in text:
-        return "YouTube requires an access check. Configure a JavaScript runtime, cookies, or a PO token, then try again."
-    if "video unavailable" in text or "content isn't available" in text or "content is unavailable" in text:
-        return "YouTube reports that this video is unavailable or no longer public."
-    if "403" in text or "forbidden" in text:
-        return "The source rejected this server's request. Try configuring cookies or a proxy."
-    if "format" in text:
-        return "That quality is not available for this video. Try another quality."
-    if "size limit" in text or "too large" in text:
-        return "The file is too large. Please choose a lower quality or MP3."
-    if "timeout" in text or "network" in text or "connection" in text:
-        return "The source timed out. Please try again in a moment."
-    return "I couldn't download that video. Please check the link and try again."
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Send a YouTube, TikTok, Instagram, or Facebook link, or use /download <https-url>.\n\n"
@@ -521,6 +472,8 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def make_choice(update: Update, url: str, info: dict[str, Any] | None = None) -> None:
     key = save_state(update, url, info)
     title = (info or {}).get("title", "Video")
+    duration = (info or {}).get("duration")
+    duration_line = f"\n⏱ Duration: {format_duration(duration)}" if duration else ""
     keyboard = [
         [InlineKeyboardButton("360p · fast", callback_data=f"d|360p|{key}"), InlineKeyboardButton("480p", callback_data=f"d|480p|{key}")],
         [InlineKeyboardButton("720p", callback_data=f"d|720p|{key}"), InlineKeyboardButton("1080p", callback_data=f"d|1080p|{key}")],
@@ -529,7 +482,7 @@ async def make_choice(update: Update, url: str, info: dict[str, Any] | None = No
         [InlineKeyboardButton("MP3 · 320 kbps", callback_data=f"d|mp3_320|{key}")],
     ]
     await update.effective_message.reply_text(
-        f"🎬 {title}\n⏱ Duration: {format_duration((info or {}).get('duration'))}\n\nChoose a format:",
+        f"🎬 {title}{duration_line}\n\nChoose a format:",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -604,36 +557,6 @@ async def send_r2_link(
     )
 
 
-def progress_text(progress: dict[str, Any], fmt: str) -> str:
-    """Turn a yt-dlp progress hook payload into a short Telegram status."""
-    status = progress.get("status")
-    if status == "finished":
-        return "🧩 Download complete. Merging/converting…"
-    if status == "started":
-        return "🧩 Preparing media…"
-    if status == "processing":
-        return "🧩 Processing media…"
-    if status != "downloading":
-        return f"⬇️ Downloading {fmt}…"
-
-    downloaded = progress.get("downloaded_bytes") or 0
-    total = progress.get("total_bytes") or progress.get("total_bytes_estimate")
-    speed = progress.get("speed")
-    eta = progress.get("eta")
-    if total:
-        percent = max(0.0, min(100.0, downloaded * 100 / total))
-        filled = int(percent // 10)
-        bar = "█" * filled + "░" * (10 - filled)
-        details = f"{percent:5.1f}%  {bar}"
-    else:
-        details = f"{downloaded / 1024 / 1024:.1f} MB"
-    if speed:
-        details += f"  {speed / 1024 / 1024:.1f} MB/s"
-    if eta is not None:
-        details += f"  ETA {int(eta) // 60}:{int(eta) % 60:02d}"
-    return f"⬇️ Downloading {fmt}\n{details}"
-
-
 async def run_download_with_progress(
     loop: asyncio.AbstractEventLoop,
     url: str,
@@ -697,6 +620,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 loop = asyncio.get_running_loop()
                 info, filename, extension = await run_download_with_progress(loop, state.url, fmt, tmpdir, query)
                 file_size = filename.stat().st_size
+                delivery = None
                 if DELIVERY_MODE == "r2":
                     await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
                     download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
@@ -707,6 +631,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     )
                     if offer_support:
                         mark_support_prompt_shown(state.chat_id, state.user_id)
+                    delivery = "r2"
                 elif DELIVERY_MODE == "auto" and file_size > MAX_UPLOAD_BYTES and r2_is_configured():
                     await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
                     download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
@@ -717,18 +642,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     )
                     if offer_support:
                         mark_support_prompt_shown(state.chat_id, state.user_id)
+                    delivery = "r2"
                 elif file_size <= MAX_UPLOAD_BYTES:
                     await query.edit_message_text("⬆️ Uploading to Telegram…\nDownload: 100%")
                     await send_file(context, state.chat_id, filename, info, extension, fmt)
                     await send_support_prompt(context, state.chat_id, state.user_id)
+                    delivery = "telegram"
                 else:
                     raise ValueError("The file exceeds Telegram's upload limit and cloud delivery is not configured")
+                _update_activity(state.activity_id, status="completed", fmt=fmt, delivery=delivery, size_bytes=file_size, duration_ms=int(info.get("duration", 0) * 1000) if info.get("duration") else None, title=info.get("title"))
                 await query.delete_message()
         except (TelegramError, BadRequest):
             LOG.exception("Telegram upload failed for chat %s", state.chat_id)
+            _update_activity(state.activity_id, status="failed", error="Telegram could not accept the file")
             await query.edit_message_text("Telegram could not accept the file. Try a lower quality.")
         except Exception as exc:
             LOG.info("download failed for %s: %s", safe_log_url(state.url), safe_log_error(exc))
+            _update_activity(state.activity_id, status="failed", error=display_error(exc))
             await query.edit_message_text(f"❌ {display_error(exc)}")
         finally:
             STATES.pop(key, None)
@@ -738,9 +668,33 @@ async def post_init(application: Application) -> None:
     LOG.info("Bot started with %s download worker(s)", MAX_WORKERS)
 
 
+def start_admin_api() -> threading.Thread | None:
+    if not ADMIN_API_ENABLED or not ADMIN_API_TOKEN:
+        LOG.info("Admin API disabled; set ADMIN_API_TOKEN and ADMIN_API_ENABLED=true to enable it")
+        return None
+    try:
+        import uvicorn
+        from .bot.admin_api import create_app
+    except ImportError:
+        import uvicorn
+        from bot.admin_api import create_app
+    config = uvicorn.Config(create_app(), host=ADMIN_API_HOST, port=ADMIN_API_PORT, log_level="warning", access_log=False)
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, name="admin-api", daemon=True)
+    thread.start()
+    LOG.info("Admin API listening on %s:%s", ADMIN_API_HOST, ADMIN_API_PORT)
+    return thread
+
+
 def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN must be set")
+    try:
+        from .bot import activity_store
+    except ImportError:
+        from bot import activity_store
+    activity_store.initialize()
+    start_admin_api()
     builder = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init)
     if TELEGRAM_API_BASE_URL:
         builder = builder.base_url(TELEGRAM_API_BASE_URL)

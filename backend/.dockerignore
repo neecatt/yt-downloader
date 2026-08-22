@@ -5,3 +5,5 @@ tgbot_env
 __pycache__
 *.pyc
 *.part
+.env
+youtube-cookies.txt
