@@ -270,8 +270,8 @@ async def send_support_prompt(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            "If this bot saved you time, you can support its Railway, R2, "
-            "and bandwidth costs. Donations are optional and the bot remains free."
+            "If this bot saved you time, you can support its hosting costs. "
+            "Donations are optional and the bot remains free."
         ),
         reply_markup=markup,
     )
