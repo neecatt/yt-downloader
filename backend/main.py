@@ -132,7 +132,10 @@ SUPPORTED_CHAT_HOSTS = {
     "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
     "instagram.com", "www.instagram.com", "facebook.com", "www.facebook.com",
     "m.facebook.com", "web.facebook.com", "fb.watch",
+    "x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com",
+    "linkedin.com", "www.linkedin.com", "lnkd.in",
 }
+IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif"}
 
 
 DONATION_URL = validate_donation_url(DONATION_URL_RAW)
@@ -234,7 +237,19 @@ def _activity_platform(url: str) -> str:
     if "instagram" in host: return "instagram"
     if "facebook" in host or host == "fb.watch": return "facebook"
     if "tiktok" in host: return "tiktok"
+    if "twitter" in host or host == "x.com": return "x"
+    if "linkedin" in host or host == "lnkd.in": return "linkedin"
     return "other"
+
+
+def is_image_info(info: dict[str, Any] | None) -> bool:
+    if not info:
+        return False
+    extension = str(info.get("ext") or "").lower()
+    if extension in IMAGE_EXTENSIONS:
+        return True
+    formats = info.get("formats") or []
+    return bool(formats) and all(str(item.get("ext") or "").lower() in IMAGE_EXTENSIONS for item in formats if isinstance(item, dict))
 
 
 def _record_contact(update: Update) -> None:
@@ -389,7 +404,7 @@ def upload_to_r2(filename: Path, info: dict[str, Any], extension: str) -> str:
         str(filename),
         R2_BUCKET_NAME,
         object_key,
-        ExtraArgs={"ContentType": "audio/mpeg" if extension == "mp3" else "video/mp4" if extension == "mp4" else "application/octet-stream"},
+        ExtraArgs={"ContentType": {"mp3": "audio/mpeg", "mp4": "video/mp4", "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}.get(extension, "application/octet-stream")},
         Config=transfer_config,
     )
     schedule_object_delete(
@@ -458,7 +473,9 @@ def ydl_base_options(tmpdir: str, progress_callback: ProgressCallback | None = N
 
 def ydl_options(tmpdir: str, fmt: str, progress_callback: ProgressCallback | None = None) -> dict[str, Any]:
     options = ydl_base_options(tmpdir, progress_callback)
-    if fmt.startswith("mp3"):
+    if fmt == "image":
+        options["format"] = "best"
+    elif fmt.startswith("mp3"):
         bitrate = fmt.split("_", 1)[1] if "_" in fmt else "192"
         if bitrate not in {"128", "192", "320"}:
             raise ValueError("Unsupported MP3 bitrate")
@@ -504,7 +521,9 @@ def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCa
             filename = max(files, key=lambda path: path.stat().st_size)
             if filename.stat().st_size > MAX_DOWNLOAD_BYTES:
                 raise ValueError("The downloaded file exceeds the configured size limit")
-            extension = "mp3" if fmt.startswith("mp3") else filename.suffix.lstrip(".") or "mp4"
+            extension = "mp3" if fmt.startswith("mp3") else filename.suffix.lstrip(".").lower() or "mp4"
+            if fmt == "image" and extension not in IMAGE_EXTENSIONS:
+                raise ValueError("That post does not contain a downloadable image")
             return info, filename, extension
         except Exception as exc:
             if attempt == 1:
@@ -525,7 +544,7 @@ def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCa
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _record_contact(update)
     await update.effective_message.reply_text(
-        "Send a YouTube, TikTok, Instagram, or Facebook link, or use /download <https-url>.\n\n"
+        "Send a YouTube, TikTok, Instagram, Facebook, X, or LinkedIn link, or use /download <https-url>.\n\n"
         "Choose a quality, then I’ll download it and send it back.\n"
         "Use /support if you would like to help keep the bot running.",
         reply_markup=support_keyboard(),
@@ -547,15 +566,20 @@ async def make_choice(update: Update, url: str, info: dict[str, Any] | None = No
     title = (info or {}).get("title", "Video")
     duration = (info or {}).get("duration")
     duration_line = f"\n⏱ Duration: {format_duration(duration)}" if duration else ""
-    keyboard = [
+    image_post = is_image_info(info)
+    if image_post:
+        keyboard = [[InlineKeyboardButton("🖼 Download image", callback_data=f"d|image|{key}")]]
+    else:
+        keyboard = [
         [InlineKeyboardButton("360p · fast", callback_data=f"d|360p|{key}"), InlineKeyboardButton("480p", callback_data=f"d|480p|{key}")],
         [InlineKeyboardButton("720p", callback_data=f"d|720p|{key}"), InlineKeyboardButton("1080p", callback_data=f"d|1080p|{key}")],
         [InlineKeyboardButton("Best quality", callback_data=f"d|best|{key}")],
         [InlineKeyboardButton("MP3 · 128 kbps", callback_data=f"d|mp3_128|{key}"), InlineKeyboardButton("MP3 · 192 kbps", callback_data=f"d|mp3_192|{key}")],
         [InlineKeyboardButton("MP3 · 320 kbps", callback_data=f"d|mp3_320|{key}")],
-    ]
+        [InlineKeyboardButton("🖼 Image post", callback_data=f"d|image|{key}")],
+        ]
     await update.effective_message.reply_text(
-        f"🎬 {title}{duration_line}\n\nChoose a format:",
+        f"{'🖼' if image_post else '🎬'} {title}{duration_line}\n\nChoose a format:",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -588,7 +612,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     text = update.effective_message.text or ""
     url = extract_url(text)
     if not url:
-        await update.effective_message.reply_text("Please send a YouTube, TikTok, Instagram, or Facebook HTTPS link.")
+        await update.effective_message.reply_text("Please send a YouTube, TikTok, Instagram, Facebook, X, or LinkedIn HTTPS link.")
         return
     await make_choice(update, url)
 
@@ -601,7 +625,9 @@ async def send_file(context: ContextTypes.DEFAULT_TYPE, chat_id: int, filename: 
     name = safe_filename(title, extension)
     caption = f"{title[:900]} · {fmt}"
     with filename.open("rb") as media:
-        if extension == "mp3":
+        if extension in {"jpg", "jpeg"}:
+            await context.bot.send_photo(chat_id=chat_id, photo=media, caption=caption)
+        elif extension == "mp3":
             await context.bot.send_audio(chat_id=chat_id, audio=media, filename=name, title=title[:64], caption=caption)
         elif extension == "mp4":
             await context.bot.send_video(chat_id=chat_id, video=media, filename=name, supports_streaming=True, caption=caption, read_timeout=300, write_timeout=300)

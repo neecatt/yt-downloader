@@ -13,6 +13,8 @@ SUPPORTED_CHAT_HOSTS = {
     "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
     "instagram.com", "www.instagram.com", "facebook.com", "www.facebook.com",
     "m.facebook.com", "web.facebook.com", "fb.watch",
+    "x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com",
+    "linkedin.com", "www.linkedin.com", "lnkd.in",
 }
 
 
