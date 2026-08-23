@@ -41,6 +41,11 @@ Useful optional settings are:
 - `HTTP_CHUNK_SIZE_MB` (default `10`, used automatically after a 403)
 - `R2_UPLOAD_CONCURRENCY` (default `8`)
 - `R2_CLEANUP_INTERVAL_SECONDS` (default `60`)
+- `DOWNLOADS_PER_USER_PER_HOUR` (default `10`)
+- `DOWNLOADS_PER_USER_PER_DAY` (default `20`)
+- `ANALYSES_PER_USER_PER_HOUR` (default `20`)
+- `DOWNLOADS_GLOBAL_PER_HOUR` (default `100`)
+- `ANALYSES_GLOBAL_PER_HOUR` (default `300`)
 - `CALLBACK_STATE_TTL_SECONDS` (default `1800`)
 - `YTDLP_COOKIES_FILE` (Netscape-format YouTube cookies, only when needed)
 - `YTDLP_PROXY` (HTTP proxy, only when needed)
@@ -50,6 +55,7 @@ Useful optional settings are:
 - `DONATION_PROMPT_COOLDOWN_HOURS` (default `24`)
 - `ADMIN_API_TOKEN` (enables the protected activity API when set)
 - `ADMIN_API_ENABLED` (default `true` when configured; set `false` to disable)
+- `ADMIN_REQUESTS_PER_MINUTE` (default `60` per connecting address)
 - `DATABASE_URL` (PostgreSQL connection string for activity logging)
 
 ## Admin activity API
@@ -136,8 +142,20 @@ as a low-cost final safety net. `DELIVERY_MODE=auto` keeps Telegram delivery as
 a fallback when R2 is not configured.
 
 If `R2_PUBLIC_BASE_URL` is configured, the URL itself is not cryptographically
-expiring; the object is nevertheless deleted after the same retention period.
-Use presigned URLs for genuinely temporary links.
+expiring, so the application ignores that setting and continues using private
+presigned URLs. Use presigned URLs for genuinely temporary links.
+
+Presigned URLs are bearer tokens: anyone who obtains one can download that
+specific object repeatedly until it expires. The bot grants GET access only,
+uses random object keys, caps the lifetime at seven days, and never exposes
+the R2 API credentials to Telegram users. Keep the bucket private and create
+the R2 API token with access limited to this bucket and the required object
+operations only.
+
+The bot also applies per-user in-memory download and analysis limits to reduce
+automated compute and storage abuse. These counters reset when the service
+restarts; use Railway scaling controls and the R2 lifecycle rule as additional
+operational safeguards.
 
 The bot deliberately rejects files above the configured upload limit instead
 of splitting raw bytes, because arbitrary byte chunks are not valid media

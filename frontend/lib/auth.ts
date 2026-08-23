@@ -3,7 +3,7 @@ import "server-only";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 
-const COOKIE_NAME = "admin_session";
+const COOKIE_NAME = process.env.NODE_ENV === "production" ? "__Host-admin_session" : "admin_session";
 const SESSION_TTL_SECONDS = 8 * 60 * 60;
 
 function secret() {
@@ -20,7 +20,7 @@ export function isDashboardConfigured() {
 
 export function validAdminToken(candidate: string) {
   const expected = process.env.ADMIN_DASHBOARD_TOKEN || "";
-  if (!expected || candidate.length !== expected.length) return false;
+  if (!expected || candidate.length > 256 || candidate.length !== expected.length) return false;
   return timingSafeEqual(Buffer.from(candidate), Buffer.from(expected));
 }
 
@@ -45,7 +45,8 @@ export async function hasValidSession() {
   if (!value) return false;
   const [timestamp, provided] = value.split(".");
   const age = Number(timestamp);
-  if (!timestamp || !provided || !Number.isFinite(age) || Date.now() / 1000 - age > SESSION_TTL_SECONDS) return false;
+  const ageSeconds = Date.now() / 1000 - age;
+  if (!timestamp || !provided || !Number.isFinite(age) || ageSeconds < 0 || ageSeconds > SESSION_TTL_SECONDS) return false;
   const expected = signature(timestamp);
   if (provided.length !== expected.length) return false;
   return timingSafeEqual(Buffer.from(provided), Buffer.from(expected));

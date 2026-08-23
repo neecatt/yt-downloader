@@ -26,6 +26,7 @@ import yt_dlp
 try:
     from .bot.cookies import prepare_cookie_file as _prepare_cookie_file
     from .bot.media import display_error, format_duration, progress_text, safe_filename
+    from .bot.limits import SlidingWindowLimiter
     from .bot.r2_cleanup import cleanup_loop, schedule_object_delete
     from .bot.security import (
         extract_url as _extract_url,
@@ -37,6 +38,7 @@ try:
 except ImportError:  # Supports running `python main.py` in backend.
     from bot.cookies import prepare_cookie_file as _prepare_cookie_file
     from bot.media import display_error, format_duration, progress_text, safe_filename
+    from bot.limits import SlidingWindowLimiter
     from bot.r2_cleanup import cleanup_loop, schedule_object_delete
     from bot.security import (
         extract_url as _extract_url,
@@ -76,14 +78,14 @@ LOG = logging.getLogger("downloader_bot")
 load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-MAX_UPLOAD_BYTES = int(os.getenv("TELEGRAM_MAX_UPLOAD_MB", "49")) * 1024 * 1024
-MAX_DOWNLOAD_BYTES = int(os.getenv("MAX_DOWNLOAD_MB", "2048")) * 1024 * 1024
+MAX_UPLOAD_BYTES = min(4096, max(1, int(os.getenv("TELEGRAM_MAX_UPLOAD_MB", "49")))) * 1024 * 1024
+MAX_DOWNLOAD_BYTES = min(4096, max(1, int(os.getenv("MAX_DOWNLOAD_MB", "2048")))) * 1024 * 1024
 MAX_URL_LENGTH = max(256, int(os.getenv("MAX_URL_LENGTH", "4096")))
-STATE_TTL_SECONDS = int(os.getenv("CALLBACK_STATE_TTL_SECONDS", "1800"))
-MAX_STATE_ENTRIES = max(100, int(os.getenv("MAX_STATE_ENTRIES", "10000")))
-MAX_WORKERS = max(1, int(os.getenv("DOWNLOAD_WORKERS", "2")))
-FRAGMENT_WORKERS = max(1, int(os.getenv("FRAGMENT_WORKERS", "4")))
-R2_UPLOAD_CONCURRENCY = max(1, int(os.getenv("R2_UPLOAD_CONCURRENCY", "8")))
+STATE_TTL_SECONDS = min(86400, max(60, int(os.getenv("CALLBACK_STATE_TTL_SECONDS", "1800"))))
+MAX_STATE_ENTRIES = min(100000, max(100, int(os.getenv("MAX_STATE_ENTRIES", "10000"))))
+MAX_WORKERS = min(8, max(1, int(os.getenv("DOWNLOAD_WORKERS", "2"))))
+FRAGMENT_WORKERS = min(16, max(1, int(os.getenv("FRAGMENT_WORKERS", "4"))))
+R2_UPLOAD_CONCURRENCY = min(32, max(1, int(os.getenv("R2_UPLOAD_CONCURRENCY", "8"))))
 HTTP_CHUNK_SIZE_MB = max(1, int(os.getenv("HTTP_CHUNK_SIZE_MB", "10")))
 YTDLP_COOKIES_FILE = os.getenv("YTDLP_COOKIES_FILE")
 YTDLP_COOKIES_B64 = os.getenv("YTDLP_COOKIES_B64")
@@ -108,7 +110,7 @@ if R2_API_TOKEN and ":" in R2_API_TOKEN:
     R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY = R2_API_TOKEN.split(":", 1)
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
 R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL")
-R2_PRESIGNED_URL_TTL = max(60, int(os.getenv("R2_PRESIGNED_URL_TTL_SECONDS", "86400")))
+R2_PRESIGNED_URL_TTL = min(604800, max(60, int(os.getenv("R2_PRESIGNED_URL_TTL_SECONDS", "86400"))))
 R2_CLEANUP_INTERVAL_SECONDS = max(30, int(os.getenv("R2_CLEANUP_INTERVAL_SECONDS", "60")))
 # Keep object retention tied to the URL lifetime so cleanup cannot leave
 # expired downloads stored longer than necessary or delete them prematurely.
@@ -117,6 +119,11 @@ ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "")
 ADMIN_API_ENABLED = os.getenv("ADMIN_API_ENABLED", "true").lower() in {"1", "true", "yes"}
 ADMIN_API_HOST = os.getenv("ADMIN_API_HOST", "0.0.0.0")
 ADMIN_API_PORT = int(os.getenv("ADMIN_API_PORT", os.getenv("PORT", "8080")))
+DOWNLOADS_PER_USER_PER_HOUR = min(100, max(1, int(os.getenv("DOWNLOADS_PER_USER_PER_HOUR", "10"))))
+DOWNLOADS_PER_USER_PER_DAY = min(500, max(DOWNLOADS_PER_USER_PER_HOUR, int(os.getenv("DOWNLOADS_PER_USER_PER_DAY", "20"))))
+ANALYSES_PER_USER_PER_HOUR = min(100, max(1, int(os.getenv("ANALYSES_PER_USER_PER_HOUR", "20"))))
+DOWNLOADS_GLOBAL_PER_HOUR = min(1000, max(1, int(os.getenv("DOWNLOADS_GLOBAL_PER_HOUR", "100"))))
+ANALYSES_GLOBAL_PER_HOUR = min(2000, max(1, int(os.getenv("ANALYSES_GLOBAL_PER_HOUR", "300"))))
 
 # Telegram callback data is limited to 64 bytes. A random opaque key keeps
 # URLs and user input out of callback data and prevents cross-chat reuse.
@@ -146,6 +153,8 @@ STATES: dict[str, LinkState] = {}
 DOWNLOAD_LOCKS: dict[int, asyncio.Lock] = {}
 SUPPORT_PROMPT_LAST_SHOWN: dict[tuple[int, int], float] = {}
 EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="download")
+DOWNLOAD_LIMITER = SlidingWindowLimiter()
+ANALYSIS_LIMITER = SlidingWindowLimiter()
 ProgressCallback = Callable[[dict[str, Any]], None]
 
 
@@ -158,6 +167,34 @@ YTDLP_EFFECTIVE_COOKIES_FILE = prepare_cookie_file()
 
 def extract_url(text: str, *, any_https: bool = False) -> str | None:
     return _extract_url(text, any_https=any_https, max_length=MAX_URL_LENGTH)
+
+
+def allow_analysis(user_id: int) -> bool:
+    return ANALYSIS_LIMITER.allow(
+        user_id,
+        limit=ANALYSES_PER_USER_PER_HOUR,
+        window_seconds=3600,
+    ) and ANALYSIS_LIMITER.allow(
+        "global",
+        limit=ANALYSES_GLOBAL_PER_HOUR,
+        window_seconds=3600,
+    )
+
+
+def allow_download(user_id: int) -> bool:
+    return DOWNLOAD_LIMITER.allow(
+        (user_id, "hour"),
+        limit=DOWNLOADS_PER_USER_PER_HOUR,
+        window_seconds=3600,
+    ) and DOWNLOAD_LIMITER.allow(
+        (user_id, "day"),
+        limit=DOWNLOADS_PER_USER_PER_DAY,
+        window_seconds=86400,
+    ) and DOWNLOAD_LIMITER.allow(
+        "global",
+        limit=DOWNLOADS_GLOBAL_PER_HOUR,
+        window_seconds=3600,
+    )
 
 
 def prune_states() -> None:
@@ -288,7 +325,7 @@ async def send_support_prompt(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
 
 def r2_is_configured() -> bool:
     values = (R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME)
-    return all(value and not value.startswith("your-") for value in values)
+    return all(value and not value.startswith("your-") for value in values) and urlsplit(R2_ENDPOINT_URL).scheme == "https"
 
 
 def r2_client():
@@ -340,7 +377,7 @@ def upload_to_r2(filename: Path, info: dict[str, Any], extension: str) -> str:
         delay_seconds=R2_OBJECT_RETENTION_SECONDS,
     )
     if R2_PUBLIC_BASE_URL:
-        return f"{R2_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"
+        LOG.warning("R2_PUBLIC_BASE_URL is ignored; temporary downloads require private presigned URLs")
     return client.generate_presigned_url(
         "get_object",
         Params={"Bucket": R2_BUCKET_NAME, "Key": object_key, "ResponseContentDisposition": f'attachment; filename="{download_name}"'},
@@ -507,6 +544,10 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if not url:
         await update.effective_message.reply_text("Please provide one valid HTTPS video URL.")
         return
+    user_id = update.effective_user.id if update.effective_user else 0
+    if not allow_analysis(user_id):
+        await update.effective_message.reply_text("You have reached the hourly link-analysis limit. Please try again later.")
+        return
     status = await update.effective_message.reply_text("🔎 Analyzing the link…")
     try:
         info = await asyncio.get_running_loop().run_in_executor(EXECUTOR, analyze_url, url)
@@ -625,6 +666,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text("A download is already running in this chat. Please wait for it to finish.")
         return
     async with lock:
+        if not allow_download(state.user_id):
+            await query.edit_message_text("You have reached the download limit. Please try again later.")
+            return
         await query.edit_message_text(f"⬇️ Downloading {fmt}…")
         await context.bot.send_chat_action(chat_id=state.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
         try:

@@ -21,7 +21,9 @@ export async function DELETE(request: NextRequest) {
   if (!(await hasValidSession())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
     const body = await request.json();
-    if (!Array.isArray(body?.ids)) return NextResponse.json({ error: "Invalid IDs" }, { status: 400 });
+    if (!Array.isArray(body?.ids) || body.ids.length < 1 || body.ids.length > 100 || !body.ids.every((id: unknown) => typeof id === "string" && /^[a-f0-9]{32}$/.test(id))) {
+      return NextResponse.json({ error: "Invalid IDs" }, { status: 400 });
+    }
     return NextResponse.json(await deleteActivity(body.ids), { headers: { "Cache-Control": "no-store" } });
   } catch {
     return NextResponse.json({ error: "Could not delete activity" }, { status: 502 });
