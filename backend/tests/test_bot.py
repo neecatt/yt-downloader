@@ -43,6 +43,7 @@ class FakeMessage:
 class FakeBot:
     def __init__(self):
         self.audio = []
+        self.photos = []
         self.videos = []
         self.documents = []
         self.actions = []
@@ -53,6 +54,9 @@ class FakeBot:
 
     async def send_audio(self, **kwargs):
         self.audio.append(kwargs)
+
+    async def send_photo(self, **kwargs):
+        self.photos.append(kwargs)
 
     async def send_video(self, **kwargs):
         self.videos.append(kwargs)
@@ -150,6 +154,8 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(bot.extract_url("https://www.tiktok.com/@user/video/1"), "https://www.tiktok.com/@user/video/1")
         self.assertEqual(bot.extract_url("https://www.instagram.com/reel/ABC123/"), "https://www.instagram.com/reel/ABC123/")
         self.assertEqual(bot.extract_url("https://www.facebook.com/reel/ABC123/"), "https://www.facebook.com/reel/ABC123/")
+        self.assertEqual(bot.extract_url("https://x.com/example/status/123456789"), "https://x.com/example/status/123456789")
+        self.assertEqual(bot.extract_url("https://www.linkedin.com/posts/example_video-123"), "https://www.linkedin.com/posts/example_video-123")
         self.assertIsNone(bot.extract_url("http://youtu.be/abc123"))
         self.assertIsNone(bot.extract_url("https://example.com/video"))
 
@@ -160,6 +166,14 @@ class PureFunctionTests(unittest.TestCase):
 
     def test_url_length_is_bounded(self):
         self.assertIsNone(bot.extract_url("https://example.com/" + "a" * 5000, any_https=True))
+
+    def test_activity_platform_classifies_x_and_linkedin(self):
+        self.assertEqual(bot._activity_platform("https://x.com/example/status/1"), "x")
+        self.assertEqual(bot._activity_platform("https://www.linkedin.com/posts/example_video-1"), "linkedin")
+
+    def test_image_info_is_detected(self):
+        self.assertTrue(bot.is_image_info({"ext": "jpg", "title": "Photo"}))
+        self.assertFalse(bot.is_image_info({"ext": "mp4", "title": "Video"}))
 
     def test_generic_https_is_opt_in(self):
         self.assertIsNone(bot.extract_url("https://example.com/video", any_https=False))
@@ -205,9 +219,11 @@ class PureFunctionTests(unittest.TestCase):
             audio = bot.ydl_options(tmpdir, "mp3")
             video = bot.ydl_options(tmpdir, "720p")
             best = bot.ydl_options(tmpdir, "best")
+            image = bot.ydl_options(tmpdir, "image")
         self.assertEqual(audio["postprocessors"][0]["preferredcodec"], "mp3")
         self.assertIn("b[height<=720][ext=mp4]", video["format"])
         self.assertEqual(best["format"], "bv*+ba/b")
+        self.assertEqual(image["format"], "best")
         self.assertEqual(video["max_filesize"], bot.MAX_DOWNLOAD_BYTES)
         with self.assertRaises(ValueError):
             bot.ydl_options("/tmp", "4k")
@@ -342,7 +358,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_message_handler_rejects_unsupported_input(self):
         update, message = update_for("not a video link")
         await bot.handle_message(update, SimpleNamespace())
-        self.assertIn("YouTube, TikTok, Instagram, or Facebook", message.replies[0][0])
+        self.assertIn("YouTube, TikTok, Instagram, Facebook, X, or LinkedIn", message.replies[0][0])
 
     async def test_download_command_analyzes_link_and_offers_choices(self):
         update, message = update_for()
@@ -430,6 +446,14 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             filename.write_bytes(b"data")
             await bot.send_file(context, 1, filename, {"title": "Clip"}, "webm", "best")
         self.assertEqual(len(context.bot.documents), 1)
+
+    async def test_send_file_uses_photo_for_jpeg(self):
+        context = SimpleNamespace(bot=FakeBot())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filename = Path(tmpdir) / "photo.jpg"
+            filename.write_bytes(b"data")
+            await bot.send_file(context, 1, filename, {"title": "Photo"}, "jpg", "image")
+        self.assertEqual(len(context.bot.photos), 1)
 
     async def test_send_file_enforces_upload_limit(self):
         context = SimpleNamespace(bot=FakeBot())
