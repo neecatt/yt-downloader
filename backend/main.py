@@ -135,7 +135,8 @@ SUPPORTED_CHAT_HOSTS = {
     "x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com",
     "linkedin.com", "www.linkedin.com", "lnkd.in",
 }
-IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif"}
+IMAGE_POST_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "avif"}
+VIDEO_ONLY_MESSAGE = "This is an image or carousel post. This bot only downloads videos and audio. Please send an individual video link."
 
 
 DONATION_URL = validate_donation_url(DONATION_URL_RAW)
@@ -242,14 +243,38 @@ def _activity_platform(url: str) -> str:
     return "other"
 
 
-def is_image_info(info: dict[str, Any] | None) -> bool:
+def is_image_or_carousel_info(info: dict[str, Any] | None) -> bool:
     if not info:
         return False
     extension = str(info.get("ext") or "").lower()
-    if extension in IMAGE_EXTENSIONS:
+    if extension in IMAGE_POST_EXTENSIONS:
         return True
     formats = info.get("formats") or []
-    return bool(formats) and all(str(item.get("ext") or "").lower() in IMAGE_EXTENSIONS for item in formats if isinstance(item, dict))
+    valid_formats = [item for item in formats if isinstance(item, dict)]
+    return bool(valid_formats) and all(
+        str(item.get("ext") or "").lower() in IMAGE_POST_EXTENSIONS
+        for item in valid_formats
+    )
+
+
+def is_x_photo_link(url: str) -> bool:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    return host in {"x.com", "twitter.com", "mobile.twitter.com"} and "/photo/" in parsed.path.lower()
+
+
+def should_analyze_media_type(url: str) -> bool:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    path = parsed.path.lower()
+    if is_x_photo_link(url):
+        return True
+    return (
+        host == "instagram.com" and ("/p/" in path or "/reel/" in path or "/tv/" in path)
+    ) or (host == "linkedin.com" and "/posts/" in path) or (
+        host in {"facebook.com", "m.facebook.com", "web.facebook.com"}
+        and any(marker in path for marker in ("/posts/", "/photos/", "/photo.php", "/permalink/"))
+    )
 
 
 def _record_contact(update: Update) -> None:
@@ -404,7 +429,7 @@ def upload_to_r2(filename: Path, info: dict[str, Any], extension: str) -> str:
         str(filename),
         R2_BUCKET_NAME,
         object_key,
-        ExtraArgs={"ContentType": {"mp3": "audio/mpeg", "mp4": "video/mp4", "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp", "gif": "image/gif"}.get(extension, "application/octet-stream")},
+        ExtraArgs={"ContentType": {"mp3": "audio/mpeg", "mp4": "video/mp4"}.get(extension, "application/octet-stream")},
         Config=transfer_config,
     )
     schedule_object_delete(
@@ -473,9 +498,7 @@ def ydl_base_options(tmpdir: str, progress_callback: ProgressCallback | None = N
 
 def ydl_options(tmpdir: str, fmt: str, progress_callback: ProgressCallback | None = None) -> dict[str, Any]:
     options = ydl_base_options(tmpdir, progress_callback)
-    if fmt == "image":
-        options["format"] = "best"
-    elif fmt.startswith("mp3"):
+    if fmt.startswith("mp3"):
         bitrate = fmt.split("_", 1)[1] if "_" in fmt else "192"
         if bitrate not in {"128", "192", "320"}:
             raise ValueError("Unsupported MP3 bitrate")
@@ -503,8 +526,12 @@ def analyze_url(url: str) -> dict[str, Any]:
     options.update({"quiet": True, "no_warnings": True, "noplaylist": True, "extract_flat": True})
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=False)
-    if not info or info.get("_type") == "playlist":
+    if not info:
         raise ValueError("That link did not resolve to a single video")
+    if info.get("_type") == "playlist":
+        raise ValueError("This is a carousel or multiple-media post")
+    if is_image_or_carousel_info(info):
+        raise ValueError("This is an image post")
     return info
 
 
@@ -522,8 +549,6 @@ def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCa
             if filename.stat().st_size > MAX_DOWNLOAD_BYTES:
                 raise ValueError("The downloaded file exceeds the configured size limit")
             extension = "mp3" if fmt.startswith("mp3") else filename.suffix.lstrip(".").lower() or "mp4"
-            if fmt == "image" and extension not in IMAGE_EXTENSIONS:
-                raise ValueError("That post does not contain a downloadable image")
             return info, filename, extension
         except Exception as exc:
             if attempt == 1:
@@ -566,20 +591,15 @@ async def make_choice(update: Update, url: str, info: dict[str, Any] | None = No
     title = (info or {}).get("title", "Video")
     duration = (info or {}).get("duration")
     duration_line = f"\n⏱ Duration: {format_duration(duration)}" if duration else ""
-    image_post = is_image_info(info)
-    if image_post:
-        keyboard = [[InlineKeyboardButton("🖼 Download image", callback_data=f"d|image|{key}")]]
-    else:
-        keyboard = [
+    keyboard = [
         [InlineKeyboardButton("360p · fast", callback_data=f"d|360p|{key}"), InlineKeyboardButton("480p", callback_data=f"d|480p|{key}")],
         [InlineKeyboardButton("720p", callback_data=f"d|720p|{key}"), InlineKeyboardButton("1080p", callback_data=f"d|1080p|{key}")],
         [InlineKeyboardButton("Best quality", callback_data=f"d|best|{key}")],
         [InlineKeyboardButton("MP3 · 128 kbps", callback_data=f"d|mp3_128|{key}"), InlineKeyboardButton("MP3 · 192 kbps", callback_data=f"d|mp3_192|{key}")],
         [InlineKeyboardButton("MP3 · 320 kbps", callback_data=f"d|mp3_320|{key}")],
-        [InlineKeyboardButton("🖼 Image post", callback_data=f"d|image|{key}")],
-        ]
+    ]
     await update.effective_message.reply_text(
-        f"{'🖼' if image_post else '🎬'} {title}{duration_line}\n\nChoose a format:",
+        f"🎬 {title}{duration_line}\n\nChoose a format:",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
@@ -614,6 +634,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not url:
         await update.effective_message.reply_text("Please send a YouTube, TikTok, Instagram, Facebook, X, or LinkedIn HTTPS link.")
         return
+    if is_x_photo_link(url):
+        await update.effective_message.reply_text(VIDEO_ONLY_MESSAGE)
+        return
+    if should_analyze_media_type(url):
+        user_id = update.effective_user.id if update.effective_user else 0
+        if not allow_analysis(user_id):
+            await update.effective_message.reply_text("You have reached the hourly link-analysis limit. Please try again later.")
+            return
+        status = await update.effective_message.reply_text("🔎 Checking the link…")
+        try:
+            info = await asyncio.get_running_loop().run_in_executor(EXECUTOR, analyze_url, url)
+            await status.delete()
+            await make_choice(update, url, info)
+        except Exception as exc:
+            LOG.info("media-type analysis failed for %s: %s", safe_log_url(url), safe_log_error(exc))
+            await status.edit_text(display_error(exc))
+        return
     await make_choice(update, url)
 
 
@@ -625,9 +662,7 @@ async def send_file(context: ContextTypes.DEFAULT_TYPE, chat_id: int, filename: 
     name = safe_filename(title, extension)
     caption = f"{title[:900]} · {fmt}"
     with filename.open("rb") as media:
-        if extension in {"jpg", "jpeg"}:
-            await context.bot.send_photo(chat_id=chat_id, photo=media, caption=caption)
-        elif extension == "mp3":
+        if extension == "mp3":
             await context.bot.send_audio(chat_id=chat_id, audio=media, filename=name, title=title[:64], caption=caption)
         elif extension == "mp4":
             await context.bot.send_video(chat_id=chat_id, video=media, filename=name, supports_streaming=True, caption=caption, read_timeout=300, write_timeout=300)
