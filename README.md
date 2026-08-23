@@ -9,8 +9,6 @@ with a separate admin dashboard for activity and messaging management.
 - Video quality selection and MP3 output.
 - Progress updates while media is being processed.
 - Telegram delivery for smaller files and cloud links for larger files.
-- Automatic cleanup of temporary cloud files.
-- Private admin dashboard with activity review and bot messaging pages.
 
 ## Repository layout
 
