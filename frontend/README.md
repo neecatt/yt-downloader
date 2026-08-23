@@ -60,3 +60,8 @@ The frontend expects `GET /admin/activity` to return:
 ```
 
 Do not put bot tokens, R2 secrets, database credentials, or admin API tokens in any `NEXT_PUBLIC_*` variable. The browser only talks to the authenticated Next.js routes.
+
+The login endpoint applies a per-instance failed-attempt throttle. Keep the
+dashboard private behind Railway access controls or a private network where
+possible; the dashboard token and backend API token must remain different,
+long random secrets.

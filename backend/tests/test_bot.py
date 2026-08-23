@@ -12,10 +12,12 @@ from unittest.mock import AsyncMock, patch
 try:
     import backend.main as bot
     from backend.bot.r2_cleanup import delete_expired_objects
+    from backend.bot.limits import SlidingWindowLimiter
 except ModuleNotFoundError:
     # Also support running discovery from inside the backend service directory.
     import main as bot
     from bot.r2_cleanup import delete_expired_objects
+    from bot.limits import SlidingWindowLimiter
 
 
 class FakeMessage:
@@ -121,6 +123,21 @@ class R2CleanupTests(unittest.TestCase):
 
         self.assertEqual(deleted, 1)
         self.assertEqual(client.deleted, ["downloads/old.mp4"])
+
+
+class LimiterTests(unittest.TestCase):
+    def test_sliding_window_blocks_until_window_expires(self):
+        limiter = SlidingWindowLimiter()
+        self.assertTrue(limiter.allow("user", limit=2, window_seconds=60, now=100))
+        self.assertTrue(limiter.allow("user", limit=2, window_seconds=60, now=110))
+        self.assertFalse(limiter.allow("user", limit=2, window_seconds=60, now=120))
+        self.assertTrue(limiter.allow("user", limit=2, window_seconds=60, now=161))
+
+    def test_sliding_window_key_storage_is_bounded(self):
+        limiter = SlidingWindowLimiter(max_keys=100)
+        for index in range(150):
+            self.assertTrue(limiter.allow(index, limit=1, window_seconds=3600, now=index))
+        self.assertLessEqual(len(limiter._entries), 100)
 
 
 class PureFunctionTests(unittest.TestCase):
