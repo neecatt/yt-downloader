@@ -41,11 +41,12 @@ export async function POST(request: Request) {
   let body: unknown;
   try { body = await request.json(); } catch { return NextResponse.json({ error: "Invalid request" }, { status: 400 }); }
   const token = typeof body === "object" && body !== null && "token" in body && typeof body.token === "string" ? body.token : "";
+  const remember = typeof body === "object" && body !== null && "remember" in body && body.remember === true;
   if (!validAdminToken(token)) {
     recordFailure(request);
     return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
   }
   const response = NextResponse.json({ ok: true });
-  response.cookies.set(COOKIE_NAME, createSessionValue(), sessionCookieOptions());
+  response.cookies.set(COOKIE_NAME, createSessionValue(remember), sessionCookieOptions(remember));
   return response;
 }

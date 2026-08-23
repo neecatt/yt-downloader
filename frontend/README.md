@@ -1,6 +1,12 @@
 # Downloader admin dashboard
 
-This is a separate Next.js service for private bot-activity monitoring. It intentionally shows Telegram usernames/display names and activity metadata, but never renders Telegram numeric user IDs.
+This is a separate Next.js service for private bot-activity monitoring and
+controlled bot messaging. It intentionally shows Telegram usernames/display
+names and activity metadata, but never renders Telegram numeric user IDs.
+
+Available pages are Activity (`/`), Broadcast (`/broadcast`), and Message user
+(`/message`). The latter two use authenticated server-side proxy routes, so the
+Telegram bot token and backend API token never reach the browser.
 
 ## Run locally
 
@@ -61,7 +67,8 @@ The frontend expects `GET /admin/activity` to return:
 
 Do not put bot tokens, R2 secrets, database credentials, or admin API tokens in any `NEXT_PUBLIC_*` variable. The browser only talks to the authenticated Next.js routes.
 
-The login endpoint applies a per-instance failed-attempt throttle. Keep the
+The login endpoint applies a per-instance failed-attempt throttle and supports
+an optional 30-day remembered-device session. Keep the
 dashboard private behind Railway access controls or a private network where
 possible; the dashboard token and backend API token must remain different,
 long random secrets.

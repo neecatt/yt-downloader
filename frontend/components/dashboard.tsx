@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { ActivityEvent, ActivityResponse } from "@/lib/activity-types";
 import { formatBytes, safeUrlLabel } from "@/lib/activity-types";
+import { AdminLayout } from "@/components/admin-layout";
 
 function date(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
@@ -77,7 +78,7 @@ export function Dashboard({ initialData }: { initialData: ActivityResponse | nul
     setDeleting(false);
   }
 
-  return <main className="dashboard-shell">
+  return <AdminLayout><main className="dashboard-shell">
     <header className="topbar">
       <div><p className="eyebrow">Downloader admin</p><h1>Activity</h1></div>
       <div className="topbar-actions">
@@ -95,7 +96,7 @@ export function Dashboard({ initialData }: { initialData: ActivityResponse | nul
       {data?.events.length ? <div className="table-wrap"><table><thead><tr><th className="select-cell"><input type="checkbox" aria-label="Select all visible activity" checked={allVisibleSelected} onChange={toggleAll} /></th><th>User</th><th>Link / title</th><th>Format</th><th>Status</th><th>Delivery</th><th>Size</th><th>When</th></tr></thead><tbody>{data.events.map((event: ActivityEvent) => <tr key={event.id}><td className="select-cell"><input type="checkbox" aria-label={`Select activity ${event.title || event.sourceUrl}`} checked={selectedIds.includes(event.id)} onChange={() => toggleSelected(event.id)} /></td><td><strong>{event.telegramUsername || "No username"}</strong><span className="muted">{event.telegramDisplayName || "—"}</span></td><td><a href={event.sourceUrl} target="_blank" rel="noreferrer">{event.title || safeUrlLabel(event.sourceUrl)}</a>{event.error && <span className="error-detail">{event.error}</span>}</td><td>{event.platform}<span className="muted">{event.format || event.action}</span></td><td><span className={statusClass(event.status)}>{event.status}</span></td><td>{event.delivery || "—"}</td><td>{formatBytes(event.sizeBytes)}</td><td className="nowrap">{date(event.createdAt)}</td></tr>)}</tbody></table></div> : <div className="empty-state"><h2>{initialData ? "No activity found" : "Activity API not connected"}</h2><p>{initialData ? "Try another filter or refresh the dashboard." : "Set ADMIN_API_URL and connect the bot activity endpoint. Demo data can be enabled locally with DASHBOARD_DEMO=true."}</p></div>}
     </section>
     <footer className="privacy-note">Bot activity only · Telegram usernames are shown when available · user IDs are intentionally not displayed.</footer>
-  </main>;
+  </main></AdminLayout>;
 }
 
 function Stat({ label, value }: { label: string; value: string }) { return <div className="stat"><span>{label}</span><strong>{value}</strong></div>; }

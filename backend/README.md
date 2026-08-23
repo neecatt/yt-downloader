@@ -72,12 +72,21 @@ it, or `8080` locally:
 GET /health
 GET /admin/activity?page=1&pageSize=25&status=completed
 DELETE /admin/activity
+POST /admin/broadcast
+POST /admin/message
 Authorization: Bearer <ADMIN_API_TOKEN>
 ```
 
 The delete endpoint accepts a JSON body such as `{"ids":["<event-id>"]}`.
 It only deletes the explicitly selected events, requires the same bearer token,
 and accepts at most 100 IDs per request.
+
+Messaging endpoints accept JSON bodies of `{"message":"..."}` for broadcasts
+and `{"username":"@name","message":"..."}` for direct messages. Direct
+messaging works only for usernames that have previously interacted with the
+bot in a private chat; Telegram does not provide a safe username-to-chat-ID
+lookup for arbitrary accounts. Numeric chat IDs are stored internally and are
+never returned by the dashboard.
 
 Example local value:
 

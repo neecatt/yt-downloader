@@ -213,6 +213,7 @@ def save_state(update: Update, url: str, info: dict[str, Any] | None = None) -> 
     message = update.effective_message
     user = update.effective_user
     key = secrets.token_urlsafe(9)
+    _record_contact(update)
     activity_id = _create_activity_event(update, url, info)
     STATES[key] = LinkState(
         url=url,
@@ -236,6 +237,26 @@ def _activity_platform(url: str) -> str:
     return "other"
 
 
+def _record_contact(update: Update) -> None:
+    try:
+        try:
+            from .bot import activity_store
+        except ImportError:
+            from bot import activity_store
+        if not activity_store.enabled() or not update.effective_chat:
+            return
+        user = update.effective_user
+        chat = update.effective_chat
+        activity_store.record_contact(
+            chat_id=chat.id,
+            username=f"@{getattr(user, 'username', '')}" if getattr(user, "username", None) else None,
+            display_name=getattr(user, "full_name", None) if user else None,
+            chat_type=getattr(chat, "type", None),
+        )
+    except Exception:
+        LOG.warning("Could not record bot contact", exc_info=True)
+
+
 def _create_activity_event(update: Update, url: str, info: dict[str, Any] | None) -> str | None:
     try:
         try:
@@ -250,6 +271,7 @@ def _create_activity_event(update: Update, url: str, info: dict[str, Any] | None
             username=f"@{getattr(user, 'username', '')}" if getattr(user, "username", None) else None,
             display_name=getattr(user, "full_name", None) if user else None,
             chat_type=getattr(chat, "type", None) if chat else None,
+            chat_id=getattr(chat, "id", None) if chat else None,
             source_url=url,
             title=(info or {}).get("title"),
             platform=_activity_platform(url),
@@ -501,6 +523,7 @@ def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCa
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _record_contact(update)
     await update.effective_message.reply_text(
         "Send a YouTube, TikTok, Instagram, or Facebook link, or use /download <https-url>.\n\n"
         "Choose a quality, then I’ll download it and send it back.\n"
@@ -510,6 +533,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _record_contact(update)
     if not support_is_configured():
         await update.effective_message.reply_text(
             "Support is not configured yet, but the bot remains free to use."
@@ -537,6 +561,7 @@ async def make_choice(update: Update, url: str, info: dict[str, Any] | None = No
 
 
 async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _record_contact(update)
     if not context.args:
         await update.effective_message.reply_text("Usage: /download <https-url>")
         return
@@ -559,6 +584,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _record_contact(update)
     text = update.effective_message.text or ""
     url = extract_url(text)
     if not url:
