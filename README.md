@@ -5,7 +5,7 @@ with a separate admin dashboard for activity and messaging management.
 
 ## Highlights
 
-- YouTube, TikTok, Instagram, and Facebook downloads.
+- YouTube, TikTok, Instagram, Facebook, X, and LinkedIn downloads.
 - Video quality selection and MP3 output.
 - Progress updates while media is being processed.
 - Telegram delivery for smaller files and cloud links for larger files.

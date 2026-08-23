@@ -1,8 +1,8 @@
 # Downloader backend
 
 The backend runs the Telegram media downloader and its protected admin API.
-It supports video and audio downloads from YouTube, TikTok, Instagram, and
-Facebook, with Telegram and cloud-storage delivery options.
+It supports video and audio downloads from YouTube, TikTok, Instagram,
+Facebook, X, and LinkedIn, with Telegram and cloud-storage delivery options.
 
 ## Features
 
