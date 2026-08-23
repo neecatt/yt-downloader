@@ -26,6 +26,7 @@ import yt_dlp
 try:
     from .bot.cookies import prepare_cookie_file as _prepare_cookie_file
     from .bot.media import display_error, format_duration, progress_text, safe_filename
+    from .bot.r2_cleanup import cleanup_loop, schedule_object_delete
     from .bot.security import (
         extract_url as _extract_url,
         safe_log_error,
@@ -36,6 +37,7 @@ try:
 except ImportError:  # Supports running `python main.py` in backend.
     from bot.cookies import prepare_cookie_file as _prepare_cookie_file
     from bot.media import display_error, format_duration, progress_text, safe_filename
+    from bot.r2_cleanup import cleanup_loop, schedule_object_delete
     from bot.security import (
         extract_url as _extract_url,
         safe_log_error,
@@ -107,6 +109,10 @@ if R2_API_TOKEN and ":" in R2_API_TOKEN:
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
 R2_PUBLIC_BASE_URL = os.getenv("R2_PUBLIC_BASE_URL")
 R2_PRESIGNED_URL_TTL = max(60, int(os.getenv("R2_PRESIGNED_URL_TTL_SECONDS", "86400")))
+R2_CLEANUP_INTERVAL_SECONDS = max(30, int(os.getenv("R2_CLEANUP_INTERVAL_SECONDS", "60")))
+# Keep object retention tied to the URL lifetime so cleanup cannot leave
+# expired downloads stored longer than necessary or delete them prematurely.
+R2_OBJECT_RETENTION_SECONDS = R2_PRESIGNED_URL_TTL
 ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "")
 ADMIN_API_ENABLED = os.getenv("ADMIN_API_ENABLED", "true").lower() in {"1", "true", "yes"}
 ADMIN_API_HOST = os.getenv("ADMIN_API_HOST", "0.0.0.0")
@@ -326,6 +332,12 @@ def upload_to_r2(filename: Path, info: dict[str, Any], extension: str) -> str:
         object_key,
         ExtraArgs={"ContentType": "audio/mpeg" if extension == "mp3" else "video/mp4" if extension == "mp4" else "application/octet-stream"},
         Config=transfer_config,
+    )
+    schedule_object_delete(
+        r2_client,
+        R2_BUCKET_NAME,
+        object_key,
+        delay_seconds=R2_OBJECT_RETENTION_SECONDS,
     )
     if R2_PUBLIC_BASE_URL:
         return f"{R2_PUBLIC_BASE_URL.rstrip('/')}/{object_key}"
@@ -664,8 +676,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             STATES.pop(key, None)
 
 
+R2_CLEANUP_TASK: asyncio.Task[Any] | None = None
+
+
 async def post_init(application: Application) -> None:
+    global R2_CLEANUP_TASK
     LOG.info("Bot started with %s download worker(s)", MAX_WORKERS)
+    if r2_is_configured():
+        R2_CLEANUP_TASK = asyncio.create_task(
+            cleanup_loop(
+                r2_client,
+                R2_BUCKET_NAME,
+                prefix="downloads/",
+                retention_seconds=R2_OBJECT_RETENTION_SECONDS,
+                interval_seconds=R2_CLEANUP_INTERVAL_SECONDS,
+            ),
+            name="r2-cleanup",
+        )
+        LOG.info(
+            "R2 cleanup enabled: downloads/ retained for %ss, checked every %ss",
+            R2_OBJECT_RETENTION_SECONDS,
+            R2_CLEANUP_INTERVAL_SECONDS,
+        )
+
+
+async def post_shutdown(application: Application) -> None:
+    global R2_CLEANUP_TASK
+    if R2_CLEANUP_TASK:
+        R2_CLEANUP_TASK.cancel()
+        await asyncio.gather(R2_CLEANUP_TASK, return_exceptions=True)
+        R2_CLEANUP_TASK = None
 
 
 def start_admin_api() -> threading.Thread | None:
@@ -695,7 +735,7 @@ def main() -> None:
         from bot import activity_store
     activity_store.initialize()
     start_admin_api()
-    builder = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init)
+    builder = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown)
     if TELEGRAM_API_BASE_URL:
         builder = builder.base_url(TELEGRAM_API_BASE_URL)
     if TELEGRAM_API_FILE_BASE_URL:
