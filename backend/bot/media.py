@@ -45,10 +45,16 @@ def progress_text(progress: dict[str, Any], fmt: str) -> str:
 
 def display_error(exc: Exception) -> str:
     text = str(exc).lower()
-    if "does not contain a downloadable image" in text or "no downloadable image" in text:
-        return "This post does not contain a downloadable image. Try one of the video or audio options instead."
-    if "carousel" in text or "multiple media" in text or "playlist" in text:
-        return "This post contains multiple media items. Please send an individual image or video post."
+    if (
+        "image post" in text
+        or "photo post" in text
+        or "carousel" in text
+        or "multiple media" in text
+        or "playlist" in text
+        or "image-only" in text
+        or "image only" in text
+    ):
+        return "This is an image or carousel post. This bot only downloads videos and audio. Please send an individual video link."
     if "private" in text or "login" in text or "cannot parse data" in text or "requires authentication" in text:
         return "This media is private or requires login. The bot can only access publicly available posts and accounts."
     if "age" in text and "restrict" in text:

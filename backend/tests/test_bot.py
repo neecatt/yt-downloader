@@ -43,7 +43,6 @@ class FakeMessage:
 class FakeBot:
     def __init__(self):
         self.audio = []
-        self.photos = []
         self.videos = []
         self.documents = []
         self.actions = []
@@ -54,9 +53,6 @@ class FakeBot:
 
     async def send_audio(self, **kwargs):
         self.audio.append(kwargs)
-
-    async def send_photo(self, **kwargs):
-        self.photos.append(kwargs)
 
     async def send_video(self, **kwargs):
         self.videos.append(kwargs)
@@ -171,9 +167,10 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(bot._activity_platform("https://x.com/example/status/1"), "x")
         self.assertEqual(bot._activity_platform("https://www.linkedin.com/posts/example_video-1"), "linkedin")
 
-    def test_image_info_is_detected(self):
-        self.assertTrue(bot.is_image_info({"ext": "jpg", "title": "Photo"}))
-        self.assertFalse(bot.is_image_info({"ext": "mp4", "title": "Video"}))
+    def test_photo_links_are_detected_as_video_only(self):
+        self.assertTrue(bot.is_x_photo_link("https://x.com/example/status/123/photo/1"))
+        self.assertFalse(bot.is_x_photo_link("https://x.com/example/status/123"))
+        self.assertTrue(bot.should_analyze_media_type("https://www.instagram.com/p/ABC123/"))
 
     def test_generic_https_is_opt_in(self):
         self.assertIsNone(bot.extract_url("https://example.com/video", any_https=False))
@@ -219,11 +216,9 @@ class PureFunctionTests(unittest.TestCase):
             audio = bot.ydl_options(tmpdir, "mp3")
             video = bot.ydl_options(tmpdir, "720p")
             best = bot.ydl_options(tmpdir, "best")
-            image = bot.ydl_options(tmpdir, "image")
         self.assertEqual(audio["postprocessors"][0]["preferredcodec"], "mp3")
         self.assertIn("b[height<=720][ext=mp4]", video["format"])
         self.assertEqual(best["format"], "bv*+ba/b")
-        self.assertEqual(image["format"], "best")
         self.assertEqual(video["max_filesize"], bot.MAX_DOWNLOAD_BYTES)
         with self.assertRaises(ValueError):
             bot.ydl_options("/tmp", "4k")
@@ -292,6 +287,10 @@ class PureFunctionTests(unittest.TestCase):
         self.assertIn("source rejected", bot.display_error(Exception("HTTP Error 403: Forbidden")))
         self.assertNotIn("secret", bot.display_error(Exception("secret internal stack trace")))
 
+    def test_image_and_carousel_errors_are_video_only(self):
+        self.assertIn("only downloads videos and audio", bot.display_error(Exception("image post")))
+        self.assertIn("only downloads videos and audio", bot.display_error(Exception("carousel playlist")))
+
     def test_safe_log_error_redacts_signed_urls(self):
         result = bot.safe_log_error(Exception("failed https://cdn.example/file?token=secret-value"))
         self.assertNotIn("secret-value", result)
@@ -359,6 +358,18 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         update, message = update_for("not a video link")
         await bot.handle_message(update, SimpleNamespace())
         self.assertIn("YouTube, TikTok, Instagram, Facebook, X, or LinkedIn", message.replies[0][0])
+
+    async def test_x_photo_link_explains_that_bot_is_video_only(self):
+        update, message = update_for("https://x.com/example/status/123/photo/1")
+        await bot.handle_message(update, SimpleNamespace())
+        self.assertIn("only downloads videos and audio", message.replies[0][0])
+
+    async def test_detected_image_post_is_rejected_without_download_options(self):
+        update, message = update_for("https://www.instagram.com/p/ABC123/")
+        with patch.object(bot, "analyze_url", side_effect=ValueError("This is an image post")):
+            await bot.handle_message(update, SimpleNamespace())
+        self.assertIn("only downloads videos and audio", message.edited[0])
+        self.assertEqual(len(bot.STATES), 0)
 
     async def test_download_command_analyzes_link_and_offers_choices(self):
         update, message = update_for()
@@ -446,14 +457,6 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             filename.write_bytes(b"data")
             await bot.send_file(context, 1, filename, {"title": "Clip"}, "webm", "best")
         self.assertEqual(len(context.bot.documents), 1)
-
-    async def test_send_file_uses_photo_for_jpeg(self):
-        context = SimpleNamespace(bot=FakeBot())
-        with tempfile.TemporaryDirectory() as tmpdir:
-            filename = Path(tmpdir) / "photo.jpg"
-            filename.write_bytes(b"data")
-            await bot.send_file(context, 1, filename, {"title": "Photo"}, "jpg", "image")
-        self.assertEqual(len(context.bot.photos), 1)
 
     async def test_send_file_enforces_upload_limit(self):
         context = SimpleNamespace(bot=FakeBot())
