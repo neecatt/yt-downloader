@@ -4,15 +4,18 @@ import asyncio
 import base64
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 try:
     import backend.main as bot
+    from backend.bot.r2_cleanup import delete_expired_objects
 except ModuleNotFoundError:
     # Also support running discovery from inside the backend service directory.
     import main as bot
+    from bot.r2_cleanup import delete_expired_objects
 
 
 class FakeMessage:
@@ -87,6 +90,37 @@ def update_for(text: str = "", *, chat_id: int = 10, user_id: int = 20):
         ),
         message,
     )
+
+
+class R2CleanupTests(unittest.TestCase):
+    def test_expired_cleanup_only_deletes_old_download_objects(self):
+        now = datetime.now(timezone.utc)
+
+        class Paginator:
+            def paginate(self, **kwargs):
+                return [{"Contents": [
+                    {"Key": "downloads/old.mp4", "LastModified": now - timedelta(hours=2)},
+                    {"Key": "downloads/live.mp4", "LastModified": now - timedelta(minutes=5)},
+                    {"Key": "other/old.mp4", "LastModified": now - timedelta(hours=2)},
+                ]}]
+
+        class Client:
+            def __init__(self):
+                self.deleted = []
+
+            def get_paginator(self, name):
+                self.paginator_name = name
+                return Paginator()
+
+            def delete_objects(self, **kwargs):
+                self.deleted.extend(item["Key"] for item in kwargs["Delete"]["Objects"])
+                return {"Errors": []}
+
+        client = Client()
+        deleted = delete_expired_objects(client, "bucket", prefix="downloads/", retention_seconds=3600)
+
+        self.assertEqual(deleted, 1)
+        self.assertEqual(client.deleted, ["downloads/old.mp4"])
 
 
 class PureFunctionTests(unittest.TestCase):

@@ -40,6 +40,7 @@ Useful optional settings are:
 - `FRAGMENT_WORKERS` (default `4`)
 - `HTTP_CHUNK_SIZE_MB` (default `10`, used automatically after a 403)
 - `R2_UPLOAD_CONCURRENCY` (default `8`)
+- `R2_CLEANUP_INTERVAL_SECONDS` (default `60`)
 - `CALLBACK_STATE_TTL_SECONDS` (default `1800`)
 - `YTDLP_COOKIES_FILE` (Netscape-format YouTube cookies, only when needed)
 - `YTDLP_PROXY` (HTTP proxy, only when needed)
@@ -125,10 +126,18 @@ Cloudflare displays the API token as an Access Key ID and Secret Access Key;
 put them together with one colon in `R2_API_TOKEN`. Do not send the secret
 value in chat or commit it.
 
-Configure an R2 lifecycle rule to delete objects under `downloads/` after a
-short retention period (for example, one day); an expiring URL does not delete
-the object automatically. `DELIVERY_MODE=auto` keeps Telegram delivery as a
-fallback when R2 is not configured.
+Every uploaded object is placed under `downloads/`. The bot schedules deletion
+at the end of the link lifetime and runs a periodic `downloads/` sweep so
+objects are also removed after a restart. It never deletes an object before
+the configured `R2_PRESIGNED_URL_TTL_SECONDS` value.
+The sweep interval defaults to 60 seconds, so restart-recovery deletion can
+occur within that interval. An optional R2 lifecycle rule is still recommended
+as a low-cost final safety net. `DELIVERY_MODE=auto` keeps Telegram delivery as
+a fallback when R2 is not configured.
+
+If `R2_PUBLIC_BASE_URL` is configured, the URL itself is not cryptographically
+expiring; the object is nevertheless deleted after the same retention period.
+Use presigned URLs for genuinely temporary links.
 
 The bot deliberately rejects files above the configured upload limit instead
 of splitting raw bytes, because arbitrary byte chunks are not valid media
