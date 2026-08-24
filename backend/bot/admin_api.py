@@ -66,11 +66,34 @@ async def _send_to_chats(chat_ids: list[int], message: str) -> tuple[int, int]:
         for chat_id in chat_ids:
             try:
                 await bot.send_message(chat_id=chat_id, text=message)
+                activity_store.record_message(chat_id=chat_id, username=None, display_name=None, direction="outbound", text=message)
                 sent += 1
-            except TelegramError:
+            except TelegramError as exc:
+                activity_store.record_message(chat_id=chat_id, username=None, display_name=None, direction="outbound", text=message, delivered=False, error=str(exc))
                 failed += 1
             await asyncio.sleep(MESSAGE_SEND_DELAY_SECONDS)
     return sent, failed
+
+
+async def _send_direct_message(chat_id: int, message: str) -> bool:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        raise HTTPException(status_code=503, detail="Bot messaging is not configured")
+    async with Bot(token=token) as bot:
+        try:
+            sent_message = await bot.send_message(chat_id=chat_id, text=message)
+        except TelegramError as exc:
+            activity_store.record_message(chat_id=chat_id, username=None, display_name=None, direction="outbound", text=message, delivered=False, error=str(exc))
+            return False
+    activity_store.record_message(
+        chat_id=chat_id,
+        username=None,
+        display_name=None,
+        direction="outbound",
+        text=message,
+        telegram_message_id=getattr(sent_message, "message_id", None),
+    )
+    return True
 
 
 def create_app() -> FastAPI:
@@ -131,5 +154,49 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="No private chat found for that username")
         sent, failed = await _send_to_chats(chat_ids[:MAX_MESSAGE_RECIPIENTS], text)
         return JSONResponse({"username": username, "targeted": len(chat_ids), "sent": sent, "failed": failed}, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin/conversations")
+    async def conversations(request: Request, authorization: str | None = Header(default=None), q: str | None = Query(default=None), limit: int = Query(default=50, ge=1, le=100)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        try:
+            result = activity_store.query_conversations(q=q, limit=limit)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Chat database unavailable") from None
+        return JSONResponse({"conversations": result}, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin/conversations/{chat_id}/messages")
+    async def conversation_messages(chat_id: int, request: Request, authorization: str | None = Header(default=None), limit: int = Query(default=100, ge=1, le=200)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        try:
+            result = activity_store.query_messages(chat_id, limit=limit)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Chat database unavailable") from None
+        return JSONResponse({"messages": result}, headers={"Cache-Control": "no-store"})
+
+    @app.post("/admin/conversations/{chat_id}/read")
+    async def mark_read(chat_id: int, request: Request, authorization: str | None = Header(default=None)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        activity_store.mark_conversation_read(chat_id)
+        return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+    @app.post("/admin/conversations/{chat_id}/messages")
+    async def reply_to_conversation(chat_id: int, request: Request, payload: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        text = _message_from_payload(payload)
+        try:
+            sent = await _send_direct_message(chat_id, text)
+        except HTTPException:
+            raise
+        if not sent:
+            raise HTTPException(status_code=502, detail="Telegram could not deliver the message")
+        return JSONResponse({"sent": True}, headers={"Cache-Control": "no-store"})
 
     return app
