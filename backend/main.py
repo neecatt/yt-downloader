@@ -297,6 +297,28 @@ def _record_contact(update: Update) -> None:
         LOG.warning("Could not record bot contact", exc_info=True)
 
 
+def _record_chat_message(update: Update, text: str) -> None:
+    if not text.strip() or not update.effective_chat:
+        return
+    try:
+        try:
+            from .bot import activity_store
+        except ImportError:
+            from bot import activity_store
+        user = update.effective_user
+        message = update.effective_message
+        activity_store.record_message(
+            chat_id=update.effective_chat.id,
+            username=f"@{getattr(user, 'username', '')}" if getattr(user, "username", None) else None,
+            display_name=getattr(user, "full_name", None) if user else None,
+            direction="inbound",
+            text=text,
+            telegram_message_id=getattr(message, "message_id", None),
+        )
+    except Exception:
+        LOG.warning("Could not record incoming chat message", exc_info=True)
+
+
 def _create_activity_event(update: Update, url: str, info: dict[str, Any] | None) -> str | None:
     try:
         try:
@@ -630,6 +652,7 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _record_contact(update)
     text = update.effective_message.text or ""
+    _record_chat_message(update, text)
     url = extract_url(text)
     if not url:
         await update.effective_message.reply_text("Please send a YouTube, TikTok, Instagram, Facebook, X, or LinkedIn HTTPS link.")

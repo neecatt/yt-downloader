@@ -65,11 +65,28 @@ def initialize() -> None:
                 telegram_username TEXT,
                 telegram_display_name TEXT,
                 chat_type TEXT,
-                updated_at TIMESTAMPTZ NOT NULL
+                updated_at TIMESTAMPTZ NOT NULL,
+                admin_read_at TIMESTAMPTZ
+            )
+            """)
+            connection.execute("ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS admin_read_at TIMESTAMPTZ")
+            connection.execute("""
+            CREATE TABLE IF NOT EXISTS bot_messages (
+                id TEXT PRIMARY KEY,
+                telegram_chat_id BIGINT NOT NULL,
+                telegram_username TEXT,
+                telegram_display_name TEXT,
+                direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+                text TEXT NOT NULL,
+                telegram_message_id BIGINT,
+                delivered BOOLEAN NOT NULL DEFAULT TRUE,
+                error TEXT,
+                created_at TIMESTAMPTZ NOT NULL
             )
             """)
             connection.execute("CREATE INDEX IF NOT EXISTS idx_activity_created_at ON activity_events(created_at DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_activity_status ON activity_events(status)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_bot_messages_chat_created ON bot_messages(telegram_chat_id, created_at DESC)")
     except Exception:
         LOG.warning("Activity database is unavailable; activity logging is temporarily disabled", exc_info=True)
 
@@ -100,6 +117,93 @@ def record_contact(*, chat_id: int, username: str | None, display_name: str | No
             )
     except Exception:
         LOG.warning("Could not record bot contact", exc_info=True)
+
+
+def record_message(*, chat_id: int, username: str | None, display_name: str | None, direction: str, text: str, telegram_message_id: int | None = None, delivered: bool = True, error: str | None = None) -> str | None:
+    """Store a text message exchanged in a private bot chat."""
+    if not enabled() or direction not in {"inbound", "outbound"} or not text.strip():
+        return None
+    message_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc)
+    try:
+        with _lock, _connect() as connection:
+            connection.execute(
+                "INSERT INTO bot_messages (id, telegram_chat_id, telegram_username, telegram_display_name, direction, text, telegram_message_id, delivered, error, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (message_id, chat_id, username, display_name, direction, text[:4096], telegram_message_id, delivered, error[:1000] if error else None, now),
+            )
+        return message_id
+    except Exception:
+        LOG.warning("Could not record chat message", exc_info=True)
+        return None
+
+
+def query_conversations(*, q: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    if not enabled():
+        return []
+    limit = min(100, max(1, limit))
+    clauses: list[str] = []
+    values: list[Any] = []
+    if q:
+        needle = f"%{q[:100]}%"
+        clauses.append("(c.telegram_username ILIKE %s OR c.telegram_display_name ILIKE %s OR EXISTS (SELECT 1 FROM bot_messages sq WHERE sq.telegram_chat_id = c.chat_id AND sq.text ILIKE %s))")
+        values.extend([needle, needle, needle])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _lock, _connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT c.chat_id, c.telegram_username, c.telegram_display_name, c.updated_at,
+                   latest.text, latest.direction, latest.created_at,
+                   COALESCE(unread.unread_count, 0)
+            FROM bot_contacts c
+            LEFT JOIN LATERAL (
+                SELECT text, direction, created_at FROM bot_messages
+                WHERE telegram_chat_id = c.chat_id ORDER BY created_at DESC LIMIT 1
+            ) latest ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT COUNT(*) AS unread_count FROM bot_messages
+                WHERE telegram_chat_id = c.chat_id AND direction = 'inbound'
+                  AND (c.admin_read_at IS NULL OR created_at > c.admin_read_at)
+            ) unread ON TRUE
+            {where}
+            ORDER BY COALESCE(latest.created_at, c.updated_at) DESC
+            LIMIT %s
+            """,
+            [*values, limit],
+        ).fetchall()
+    return [
+        {
+            "chatId": int(row[0]), "username": row[1], "displayName": row[2],
+            "updatedAt": row[3].isoformat(), "lastText": row[4],
+            "lastDirection": row[5], "lastMessageAt": row[6].isoformat() if row[6] else None,
+            "unreadCount": int(row[7] or 0),
+        }
+        for row in rows
+    ]
+
+
+def query_messages(chat_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
+    if not enabled():
+        return []
+    limit = min(200, max(1, limit))
+    with _lock, _connect() as connection:
+        rows = connection.execute(
+            "SELECT id, direction, text, delivered, error, created_at FROM bot_messages WHERE telegram_chat_id = %s ORDER BY created_at DESC LIMIT %s",
+            (chat_id, limit),
+        ).fetchall()
+    return [
+        {"id": row[0], "direction": row[1], "text": row[2], "delivered": bool(row[3]), "error": row[4], "createdAt": row[5].isoformat()}
+        for row in reversed(rows)
+    ]
+
+
+def mark_conversation_read(chat_id: int) -> None:
+    if not enabled():
+        return
+    try:
+        with _lock, _connect() as connection:
+            connection.execute("UPDATE bot_contacts SET admin_read_at = %s WHERE chat_id = %s", (datetime.now(timezone.utc), chat_id))
+    except Exception:
+        LOG.warning("Could not mark conversation read", exc_info=True)
 
 
 def update_event(event_id: str | None, *, status: str, fmt: str | None = None, delivery: str | None = None, size_bytes: int | None = None, duration_ms: int | None = None, title: str | None = None, error: str | None = None) -> None:
