@@ -8,6 +8,7 @@ const navigation = [
   { href: "/", label: "Activity", detail: "Usage and logs" },
   { href: "/broadcast", label: "Broadcast", detail: "Message everyone" },
   { href: "/message", label: "Message user", detail: "Contact one user" },
+  { href: "/chats", label: "Chats", detail: "View and reply" },
 ];
 
 export function AdminLayout({ children }: { children: ReactNode }) {
