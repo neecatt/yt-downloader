@@ -36,6 +36,7 @@ try:
         validate_donation_url,
         validate_remote_url,
     )
+    from .bot.i18n import language_keyboard, normalize_language, tr
 except ImportError:  # Supports running `python main.py` in backend.
     from bot.cookies import prepare_cookie_file as _prepare_cookie_file
     from bot.media import display_error, format_duration, progress_text, safe_filename
@@ -48,6 +49,7 @@ except ImportError:  # Supports running `python main.py` in backend.
         validate_donation_url,
         validate_remote_url,
     )
+    from bot.i18n import language_keyboard, normalize_language, tr
 try:
     from dotenv import load_dotenv
 except ImportError:  # Keeps the bot usable in the old local virtualenv.
@@ -61,7 +63,7 @@ except ImportError:  # Keeps the bot usable in the old local virtualenv.
                 continue
             key, value = line.split("=", 1)
             os.environ.setdefault(key.strip(), value.strip().strip("'\""))
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
@@ -103,6 +105,7 @@ ALLOW_GENERIC_HTTPS = os.getenv("ALLOW_GENERIC_HTTPS", "false").lower() in {"1",
 DONATION_URL_RAW = os.getenv("DONATION_URL", "").strip()
 DONATION_PROMPTS_ENABLED = os.getenv("DONATION_PROMPTS_ENABLED", "true").lower() in {"1", "true", "yes"}
 DONATION_PROMPT_COOLDOWN_SECONDS = max(0, int(os.getenv("DONATION_PROMPT_COOLDOWN_HOURS", "24"))) * 3600
+
 R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
 R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL") or (f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com" if R2_ACCOUNT_ID else None)
 R2_API_TOKEN = os.getenv("R2_API_TOKEN")
@@ -171,6 +174,7 @@ class PendingDelivery:
 
 STATES: dict[str, LinkState] = {}
 PENDING_DELIVERIES: dict[str, PendingDelivery] = {}
+LANGUAGE_CACHE: dict[int, str] = {}
 DOWNLOAD_LOCKS: dict[int, asyncio.Lock] = {}
 SUPPORT_PROMPT_LAST_SHOWN: dict[tuple[int, int], float] = {}
 EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="download")
@@ -216,6 +220,48 @@ def allow_download(user_id: int) -> bool:
         limit=DOWNLOADS_GLOBAL_PER_HOUR,
         window_seconds=3600,
     )
+
+
+def chat_language(chat_id: int) -> str:
+    cached = LANGUAGE_CACHE.get(chat_id)
+    if cached:
+        return normalize_language(cached)
+    try:
+        try:
+            from .bot import activity_store
+        except ImportError:
+            from bot import activity_store
+        selected = normalize_language(activity_store.get_language(chat_id))
+    except Exception:
+        selected = "en"
+    LANGUAGE_CACHE[chat_id] = selected
+    return selected
+
+
+def update_chat_language(chat_id: int, language: str) -> str:
+    selected = normalize_language(language)
+    LANGUAGE_CACHE[chat_id] = selected
+    try:
+        try:
+            from .bot import activity_store
+        except ImportError:
+            from bot import activity_store
+        activity_store.set_language(chat_id, selected)
+    except Exception:
+        LOG.warning("Could not persist chat language", exc_info=True)
+    return selected
+
+
+def language_for_update(update: Update) -> str:
+    return chat_language(update.effective_chat.id)
+
+
+def start_keyboard(language: str) -> InlineKeyboardMarkup:
+    rows = list(language_keyboard().inline_keyboard)
+    support = support_keyboard(language)
+    if support:
+        rows.extend(support.inline_keyboard)
+    return InlineKeyboardMarkup(rows)
 
 
 def prune_states() -> None:
@@ -444,25 +490,23 @@ def mark_support_prompt_shown(chat_id: int, user_id: int, now: float | None = No
     SUPPORT_PROMPT_LAST_SHOWN[(chat_id, user_id)] = time.monotonic() if now is None else now
 
 
-def support_keyboard() -> InlineKeyboardMarkup | None:
+def support_keyboard(language: str = "en") -> InlineKeyboardMarkup | None:
     if not support_is_configured():
         return None
-    buttons = [InlineKeyboardButton("☕ Support this bot", url=DONATION_URL)]
+    buttons = [InlineKeyboardButton(tr(language, "support_button"), url=DONATION_URL)]
     return InlineKeyboardMarkup([buttons])
 
 
-async def send_support_prompt(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, *, force: bool = False) -> bool:
+async def send_support_prompt(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, *, force: bool = False, language: str | None = None) -> bool:
     if not force and not support_prompt_allowed(chat_id, user_id):
         return False
-    markup = support_keyboard()
+    selected_language = normalize_language(language or chat_language(chat_id))
+    markup = support_keyboard(selected_language)
     if not markup:
         return False
     await context.bot.send_message(
         chat_id=chat_id,
-        text=(
-            "If this bot saved you time, you can support its hosting costs. "
-            "Donations are optional and the bot remains free."
-        ),
+        text=tr(selected_language, "support"),
         reply_markup=markup,
     )
     if not force:
@@ -653,33 +697,48 @@ def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCa
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _record_contact(update)
+    language = language_for_update(update)
     await update.effective_message.reply_text(
-        "Send a YouTube, TikTok, Instagram, Facebook, X, or LinkedIn link, or use /download <https-url>.\n\n"
-        "Choose a quality, then I’ll download it and send it back.\n"
-        "Use /feedback <your feedback> to send feedback.\n"
-        "Use /support if you would like to help keep the bot running.",
-        reply_markup=support_keyboard(),
+        f"{tr(language, 'welcome')}\n\n{tr(language, 'help_hint')}\n{tr(language, 'settings_hint')}",
+        reply_markup=start_keyboard(language),
     )
 
 
 async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _record_contact(update)
+    language = language_for_update(update)
     if not support_is_configured():
-        await update.effective_message.reply_text(
-            "Support is not configured yet, but the bot remains free to use."
-        )
+        await update.effective_message.reply_text(tr(language, "support_unconfigured"))
         return
-    await send_support_prompt(context, update.effective_chat.id, update.effective_user.id, force=True)
+    await send_support_prompt(context, update.effective_chat.id, update.effective_user.id, force=True, language=language)
+
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _record_contact(update)
+    language = language_for_update(update)
+    await update.effective_message.reply_text(
+        tr(language, "settings_language"),
+        reply_markup=language_keyboard(),
+    )
+
+
+async def language_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, language: str) -> None:
+    selected = update_chat_language(update.effective_chat.id, language)
+    await update.callback_query.edit_message_text(
+        f"{tr(selected, 'welcome')}\n\n{tr(selected, 'help_hint')}\n{tr(selected, 'settings_hint')}",
+        reply_markup=start_keyboard(selected),
+    )
 
 
 async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _record_contact(update)
+    language = language_for_update(update)
     feedback = " ".join(context.args).strip()
     if not feedback:
-        await update.effective_message.reply_text("Usage: /feedback <your feedback>")
+        await update.effective_message.reply_text(tr(language, "feedback_usage"))
         return
     if len(feedback) > 4096:
-        await update.effective_message.reply_text("Please keep feedback under 4096 characters.")
+        await update.effective_message.reply_text(tr(language, "feedback_too_long"))
         return
     try:
         try:
@@ -698,76 +757,84 @@ async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         feedback_id = None
         LOG.warning("Could not save user feedback", exc_info=True)
     if feedback_id:
-        await update.effective_message.reply_text("Thanks — your feedback has been saved.")
+        await update.effective_message.reply_text(tr(language, "feedback_saved"))
     else:
-        await update.effective_message.reply_text("I couldn’t save that feedback right now. Please try again later.")
+        await update.effective_message.reply_text(tr(language, "feedback_failed"))
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _record_contact(update)
+    await update.effective_message.reply_text(tr(language_for_update(update), "help"))
 
 
 async def make_choice(update: Update, url: str, info: dict[str, Any] | None = None) -> None:
     key = save_state(update, url, info)
+    language = language_for_update(update)
     title = (info or {}).get("title", "Video")
     duration = (info or {}).get("duration")
-    duration_line = f"\n⏱ Duration: {format_duration(duration)}" if duration else ""
+    duration_line = f"\n⏱ {tr(language, 'duration')}: {format_duration(duration)}" if duration else ""
     keyboard = [
-        [InlineKeyboardButton("360p · fast", callback_data=f"d|360p|{key}"), InlineKeyboardButton("480p", callback_data=f"d|480p|{key}")],
-        [InlineKeyboardButton("720p", callback_data=f"d|720p|{key}"), InlineKeyboardButton("1080p", callback_data=f"d|1080p|{key}")],
-        [InlineKeyboardButton("Best quality", callback_data=f"d|best|{key}")],
-        [InlineKeyboardButton("MP3 · 128 kbps", callback_data=f"d|mp3_128|{key}"), InlineKeyboardButton("MP3 · 192 kbps", callback_data=f"d|mp3_192|{key}")],
-        [InlineKeyboardButton("MP3 · 320 kbps", callback_data=f"d|mp3_320|{key}")],
+        [InlineKeyboardButton(tr(language, "fast_360"), callback_data=f"d|360p|{key}"), InlineKeyboardButton(tr(language, "quality_480"), callback_data=f"d|480p|{key}")],
+        [InlineKeyboardButton(tr(language, "quality_720"), callback_data=f"d|720p|{key}"), InlineKeyboardButton(tr(language, "quality_1080"), callback_data=f"d|1080p|{key}")],
+        [InlineKeyboardButton(tr(language, "best"), callback_data=f"d|best|{key}")],
+        [InlineKeyboardButton(tr(language, "mp3_128"), callback_data=f"d|mp3_128|{key}"), InlineKeyboardButton(tr(language, "mp3_192"), callback_data=f"d|mp3_192|{key}")],
+        [InlineKeyboardButton(tr(language, "mp3_320"), callback_data=f"d|mp3_320|{key}")],
     ]
     await update.effective_message.reply_text(
-        f"🎬 {title}{duration_line}\n\nChoose a format:",
+        tr(language, "choose_format", title=title, duration=duration_line),
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
 async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _record_contact(update)
+    language = language_for_update(update)
     if not context.args:
-        await update.effective_message.reply_text("Usage: /download <https-url>")
+        await update.effective_message.reply_text(tr(language, "download_usage"))
         return
     url = extract_url(context.args[0], any_https=ALLOW_GENERIC_HTTPS)
     if not url:
-        await update.effective_message.reply_text("Please provide one valid HTTPS video URL.")
+        await update.effective_message.reply_text(tr(language, "download_url"))
         return
     user_id = update.effective_user.id if update.effective_user else 0
     if not allow_analysis(user_id):
-        await update.effective_message.reply_text("You have reached the hourly link-analysis limit. Please try again later.")
+        await update.effective_message.reply_text(tr(language, "analysis_limit"))
         return
-    status = await update.effective_message.reply_text("🔎 Analyzing the link…")
+    status = await update.effective_message.reply_text(tr(language, "analyzing"))
     try:
         info = await asyncio.get_running_loop().run_in_executor(EXECUTOR, analyze_url, url)
         await status.delete()
         await make_choice(update, url, info)
     except Exception as exc:
         LOG.info("analysis failed for %s: %s", safe_log_url(url), safe_log_error(exc))
-        await status.edit_text(display_error(exc))
+        await status.edit_text(display_error(exc, language))
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _record_contact(update)
+    language = language_for_update(update)
     text = update.effective_message.text or ""
     _record_chat_message(update, text)
     url = extract_url(text)
     if not url:
-        await update.effective_message.reply_text("Please send a YouTube, TikTok, Instagram, Facebook, X, or LinkedIn HTTPS link.")
+        await update.effective_message.reply_text(tr(language, "invalid_link"))
         return
     if is_x_photo_link(url):
-        await update.effective_message.reply_text(VIDEO_ONLY_MESSAGE)
+        await update.effective_message.reply_text(tr(language, "video_only"))
         return
     if should_analyze_media_type(url):
         user_id = update.effective_user.id if update.effective_user else 0
         if not allow_analysis(user_id):
-            await update.effective_message.reply_text("You have reached the hourly link-analysis limit. Please try again later.")
+            await update.effective_message.reply_text(tr(language, "analysis_limit"))
             return
-        status = await update.effective_message.reply_text("🔎 Checking the link…")
+        status = await update.effective_message.reply_text(tr(language, "checking"))
         try:
             info = await asyncio.get_running_loop().run_in_executor(EXECUTOR, analyze_url, url)
             await status.delete()
             await make_choice(update, url, info)
         except Exception as exc:
             LOG.info("media-type analysis failed for %s: %s", safe_log_url(url), safe_log_error(exc))
-            await status.edit_text(display_error(exc))
+            await status.edit_text(display_error(exc, language))
         return
     await make_choice(update, url)
 
@@ -798,9 +865,10 @@ async def send_r2_link(
     reply_markup: InlineKeyboardMarkup | None = None,
     selected_by_user: bool = False,
 ) -> None:
+    language = chat_language(chat_id)
     title = info.get("title", "Downloaded file")
     size_text = f"{size_bytes / 1024 / 1024:.1f} MB" if size_bytes else "large"
-    download_button = [InlineKeyboardButton("⬇️ Download file", url=url)]
+    download_button = [InlineKeyboardButton(tr(language, "download_file"), url=url)]
     keyboard_rows = [download_button]
     if reply_markup:
         keyboard_rows.extend(reply_markup.inline_keyboard)
@@ -808,21 +876,17 @@ async def send_r2_link(
     await context.bot.send_message(
         chat_id=chat_id,
         text=(
-            f"✅ Ready: {title[:700]}\nFormat: {fmt}\nSize: {size_text}\n\n"
-            + (
-                "You chose a temporary download link."
-                if selected_by_user
-                else "The media exceeds Telegram's upload limit, so I’m giving you a temporary download link instead."
-            )
+            f"✅ Ready: {title[:700]}\n{tr(language, 'format_label')}: {fmt}\n{tr(language, 'size_label')}: {size_text}\n\n"
+            + tr(language, "ready_link_choice" if selected_by_user else "ready_link_large")
         ),
         reply_markup=keyboard,
     )
 
 
-def delivery_choice_keyboard(key: str) -> InlineKeyboardMarkup:
+def delivery_choice_keyboard(key: str, language: str = "en") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📨 Send through Telegram", callback_data=f"p|telegram|{key}")],
-        [InlineKeyboardButton("⬇️ Give me a download link", callback_data=f"p|r2|{key}")],
+        [InlineKeyboardButton(tr(language, "choice_telegram"), callback_data=f"p|telegram|{key}")],
+        [InlineKeyboardButton(tr(language, "choice_link"), callback_data=f"p|r2|{key}")],
     ])
 
 
@@ -832,6 +896,7 @@ async def run_download_with_progress(
     fmt: str,
     tmpdir: str,
     query: Any,
+    language: str = "en",
 ) -> tuple[dict[str, Any], Path, str]:
     """Run yt-dlp and throttle progress edits to Telegram-friendly updates."""
     progress_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -850,7 +915,7 @@ async def run_download_with_progress(
         now = time.monotonic()
         if now - last_update >= 1.5 or latest.get("status") in {"finished", "started", "processing"}:
             try:
-                await query.edit_message_text(progress_text(latest, fmt))
+                await query.edit_message_text(progress_text(latest, fmt, language))
                 last_update = now
             except TelegramError:
                 LOG.debug("Unable to update download progress", exc_info=True)
@@ -859,7 +924,7 @@ async def run_download_with_progress(
         latest = progress_queue.get_nowait()
     if latest and latest.get("status") == "finished":
         try:
-            await query.edit_message_text(progress_text(latest, fmt))
+            await query.edit_message_text(progress_text(latest, fmt, language))
         except TelegramError:
             LOG.debug("Unable to update final download progress", exc_info=True)
     return result
@@ -867,31 +932,32 @@ async def run_download_with_progress(
 
 async def pending_delivery_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str, key: str) -> None:
     query = update.callback_query
+    language = language_for_update(update)
     if mode == "r2" and not r2_is_configured():
-        await query.edit_message_text("Download links are not configured. Please choose Telegram delivery instead.")
+        await query.edit_message_text(tr(language, "link_unconfigured"))
         return
     pending = take_pending_delivery(key, update)
     if not pending:
-        await query.edit_message_text("That delivery choice has expired. Please send the link again.")
+        await query.edit_message_text(tr(language, "delivery_expired"))
         return
     lock = DOWNLOAD_LOCKS.setdefault(pending.chat_id, asyncio.Lock())
     try:
         async with lock:
             loop = asyncio.get_running_loop()
             if mode == "telegram":
-                await query.edit_message_text("⬆️ Uploading to Telegram…\nDownload: 100%")
+                await query.edit_message_text(tr(language, "upload_telegram"))
                 await send_file(context, pending.chat_id, pending.filename, pending.info, pending.extension, pending.fmt)
                 await send_support_prompt(context, pending.chat_id, pending.user_id)
                 delivery = "telegram"
             else:
-                await query.edit_message_text("☁️ Preparing your download link…")
+                await query.edit_message_text(tr(language, "prepare_link"))
                 download_url = await loop.run_in_executor(
                     EXECUTOR, upload_to_r2, pending.filename, pending.info, pending.extension
                 )
                 offer_support = support_prompt_allowed(pending.chat_id, pending.user_id)
                 await send_r2_link(
                     context, pending.chat_id, download_url, pending.info, pending.fmt,
-                    pending.size_bytes, support_keyboard() if offer_support else None,
+                    pending.size_bytes, support_keyboard(language) if offer_support else None,
                     selected_by_user=True,
                 )
                 if offer_support:
@@ -910,11 +976,11 @@ async def pending_delivery_handler(update: Update, context: ContextTypes.DEFAULT
     except (TelegramError, BadRequest):
         LOG.exception("Pending delivery failed for chat %s", pending.chat_id)
         _update_activity(pending.activity_id, status="failed", error="Telegram could not accept the file")
-        await query.edit_message_text("Telegram could not accept the file. Please try the other delivery option.")
+        await query.edit_message_text(tr(language, "telegram_failed_other"))
     except Exception as exc:
         LOG.info("pending delivery failed: %s", safe_log_error(exc))
-        _update_activity(pending.activity_id, status="failed", error=display_error(exc))
-        await query.edit_message_text(f"❌ {display_error(exc)}")
+        _update_activity(pending.activity_id, status="failed", error=display_error(exc, language))
+        await query.edit_message_text(f"❌ {display_error(exc, language)}")
     finally:
         discard_pending_delivery(pending)
 
@@ -922,52 +988,57 @@ async def pending_delivery_handler(update: Update, context: ContextTypes.DEFAULT
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
+    if isinstance(query.data, str) and query.data.startswith("lang|"):
+        _, language = query.data.split("|", 1)
+        await language_button_handler(update, context, language)
+        return
     try:
         action, value, key = query.data.split("|", 2)
     except (AttributeError, ValueError):
-        await query.edit_message_text("That button is no longer valid. Please send the link again.")
+        await query.edit_message_text(tr(language_for_update(update), "invalid_button"))
         return
     if action == "p":
         await pending_delivery_handler(update, context, value, key)
         return
     if action != "d":
-        await query.edit_message_text("That button is no longer valid. Please send the link again.")
+        await query.edit_message_text(tr(language_for_update(update), "invalid_button"))
         return
     fmt = value
     state = get_state(key, update)
+    language = language_for_update(update)
     if not state:
-        await query.edit_message_text("That link has expired. Please send it again.")
+        await query.edit_message_text(tr(language, "link_expired"))
         return
     lock = DOWNLOAD_LOCKS.setdefault(state.chat_id, asyncio.Lock())
     if lock.locked():
-        await query.edit_message_text("A download is already running in this chat. Please wait for it to finish.")
+        await query.edit_message_text(tr(language, "already_running"))
         return
     async with lock:
         if not allow_download(state.user_id):
-            await query.edit_message_text("You have reached the download limit. Please try again later.")
+            await query.edit_message_text(tr(language, "download_limit"))
             return
-        await query.edit_message_text(f"⬇️ Downloading {fmt}…")
+        await query.edit_message_text(tr(language, "downloading", fmt=fmt))
         await context.bot.send_chat_action(chat_id=state.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
         download_directory = Path(tempfile.mkdtemp(prefix="ytbot-"))
         keep_pending = False
         try:
             loop = asyncio.get_running_loop()
-            info, filename, extension = await run_download_with_progress(loop, state.url, fmt, str(download_directory), query)
+            info, filename, extension = await run_download_with_progress(loop, state.url, fmt, str(download_directory), query, language)
             file_size = filename.stat().st_size
             delivery = None
             if DELIVERY_MODE == "r2":
-                await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
+                await query.edit_message_text(tr(language, "upload_cloud"))
                 download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
                 offer_support = support_prompt_allowed(state.chat_id, state.user_id)
-                await send_r2_link(context, state.chat_id, download_url, info, fmt, file_size, support_keyboard() if offer_support else None)
+                await send_r2_link(context, state.chat_id, download_url, info, fmt, file_size, support_keyboard(language) if offer_support else None)
                 if offer_support:
                     mark_support_prompt_shown(state.chat_id, state.user_id)
                 delivery = "r2"
             elif DELIVERY_MODE == "auto" and file_size > MAX_UPLOAD_BYTES and r2_is_configured():
-                await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
+                await query.edit_message_text(tr(language, "upload_cloud"))
                 download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
                 offer_support = support_prompt_allowed(state.chat_id, state.user_id)
-                await send_r2_link(context, state.chat_id, download_url, info, fmt, file_size, support_keyboard() if offer_support else None)
+                await send_r2_link(context, state.chat_id, download_url, info, fmt, file_size, support_keyboard(language) if offer_support else None)
                 if offer_support:
                     mark_support_prompt_shown(state.chat_id, state.user_id)
                 delivery = "r2"
@@ -978,14 +1049,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 )
                 keep_pending = True
                 await query.edit_message_text(
-                    f"✅ Ready: {info.get('title', 'Downloaded file')[:700]}\n"
-                    f"Size: {file_size / 1024 / 1024:.1f} MB\n\n"
-                    "How would you like to receive it?",
-                    reply_markup=delivery_choice_keyboard(pending_key),
+                    tr(language, "ready_choice", title=info.get("title", "Downloaded file")[:700], size=file_size / 1024 / 1024),
+                    reply_markup=delivery_choice_keyboard(pending_key, language),
                 )
                 return
             elif file_size <= MAX_UPLOAD_BYTES:
-                await query.edit_message_text("⬆️ Uploading to Telegram…\nDownload: 100%")
+                await query.edit_message_text(tr(language, "upload_telegram"))
                 await send_file(context, state.chat_id, filename, info, extension, fmt)
                 await send_support_prompt(context, state.chat_id, state.user_id)
                 delivery = "telegram"
@@ -996,11 +1065,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except (TelegramError, BadRequest):
             LOG.exception("Telegram upload failed for chat %s", state.chat_id)
             _update_activity(state.activity_id, status="failed", error="Telegram could not accept the file")
-            await query.edit_message_text("Telegram could not accept the file. Try a lower quality.")
+            await query.edit_message_text(tr(language, "telegram_failed_quality"))
         except Exception as exc:
             LOG.info("download failed for %s: %s", safe_log_url(state.url), safe_log_error(exc))
-            _update_activity(state.activity_id, status="failed", error=display_error(exc))
-            await query.edit_message_text(f"❌ {display_error(exc)}")
+            _update_activity(state.activity_id, status="failed", error=display_error(exc, language))
+            await query.edit_message_text(f"❌ {display_error(exc, language)}")
         finally:
             if not keep_pending:
                 shutil.rmtree(download_directory, ignore_errors=True)
@@ -1021,6 +1090,14 @@ async def pending_delivery_cleanup_loop() -> None:
 async def post_init(application: Application) -> None:
     global R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK
     LOG.info("Bot started with %s download worker(s)", MAX_WORKERS)
+    await application.bot.set_my_commands([
+        BotCommand("start", "Show the welcome screen"),
+        BotCommand("help", "Show usage instructions"),
+        BotCommand("download", "Download a video from a link"),
+        BotCommand("feedback", "Send feedback"),
+        BotCommand("support", "Support the bot"),
+        BotCommand("settings", "Change language"),
+    ])
     PENDING_DELIVERY_CLEANUP_TASK = asyncio.create_task(
         pending_delivery_cleanup_loop(), name="pending-delivery-cleanup"
     )
@@ -1092,8 +1169,10 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("support", support_command))
     application.add_handler(CommandHandler("feedback", feedback_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("download", download_command))
-    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(?:d|p)\|"))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(?:d|p|lang)\|"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

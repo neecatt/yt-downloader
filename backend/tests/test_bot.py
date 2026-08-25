@@ -143,6 +143,7 @@ class LimiterTests(unittest.TestCase):
 class PureFunctionTests(unittest.TestCase):
     def setUp(self):
         bot.STATES.clear()
+        bot.LANGUAGE_CACHE.clear()
         bot.SUPPORT_PROMPT_LAST_SHOWN.clear()
 
     def test_extracts_supported_https_links_and_strips_punctuation(self):
@@ -316,6 +317,7 @@ class PureFunctionTests(unittest.TestCase):
 class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.STATES.clear()
+        bot.LANGUAGE_CACHE.clear()
         for pending in list(bot.PENDING_DELIVERIES.values()):
             bot.discard_pending_delivery(pending)
         bot.PENDING_DELIVERIES.clear()
@@ -334,7 +336,30 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
              patch.object(bot, "DONATION_PROMPTS_ENABLED", True):
             await bot.start(update, SimpleNamespace())
         buttons = message.replies[0][1].inline_keyboard
-        self.assertEqual(buttons[0][0].text, "☕ Support this bot")
+        self.assertTrue(any(button.text == "☕ Support this bot" for row in buttons for button in row))
+
+    async def test_start_shows_language_buttons_and_language_can_be_changed(self):
+        update, message = update_for()
+        await bot.start(update, SimpleNamespace())
+        language_buttons = message.replies[0][1].inline_keyboard[0]
+        self.assertEqual([button.callback_data for button in language_buttons], ["lang|en", "lang|ru", "lang|az"])
+        query = FakeQuery("lang|ru", message)
+        update.callback_query = query
+        with patch.object(bot, "activity_store", create=True):
+            await bot.language_button_handler(update, SimpleNamespace(), "ru")
+        self.assertIn("Добро пожаловать", query.edited[0])
+
+    async def test_settings_command_shows_language_buttons(self):
+        update, message = update_for()
+        await bot.settings_command(update, SimpleNamespace())
+        self.assertEqual(message.replies[0][1].inline_keyboard[0][2].callback_data, "lang|az")
+
+    async def test_help_command_explains_commands_and_supported_platforms(self):
+        update, message = update_for()
+        await bot.help_command(update, SimpleNamespace())
+        self.assertIn("/download", message.replies[0][0])
+        self.assertIn("YouTube", message.replies[0][0])
+        self.assertIn("/settings", message.replies[0][0])
 
     async def test_feedback_command_saves_text_and_confirms(self):
         update, message = update_for()
@@ -352,7 +377,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_feedback_command_requires_text(self):
         update, message = update_for()
         await bot.feedback_command(update, SimpleNamespace(args=[]))
-        self.assertIn("Usage: /feedback", message.replies[0][0])
+        self.assertIn("/feedback Your message here", message.replies[0][0])
 
     async def test_support_command_always_works_even_after_prompt_cooldown(self):
         update, message = update_for()
