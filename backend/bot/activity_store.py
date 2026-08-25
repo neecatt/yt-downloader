@@ -84,9 +84,22 @@ def initialize() -> None:
                 created_at TIMESTAMPTZ NOT NULL
             )
             """)
+            connection.execute("""
+            CREATE TABLE IF NOT EXISTS feedbacks (
+                id TEXT PRIMARY KEY,
+                telegram_chat_id BIGINT NOT NULL,
+                telegram_username TEXT,
+                telegram_display_name TEXT,
+                feedback TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'reviewed')),
+                created_at TIMESTAMPTZ NOT NULL,
+                reviewed_at TIMESTAMPTZ
+            )
+            """)
             connection.execute("CREATE INDEX IF NOT EXISTS idx_activity_created_at ON activity_events(created_at DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_activity_status ON activity_events(status)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_bot_messages_chat_created ON bot_messages(telegram_chat_id, created_at DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_feedback_status_created ON feedbacks(status, created_at DESC)")
     except Exception:
         LOG.warning("Activity database is unavailable; activity logging is temporarily disabled", exc_info=True)
 
@@ -135,6 +148,71 @@ def record_message(*, chat_id: int, username: str | None, display_name: str | No
     except Exception:
         LOG.warning("Could not record chat message", exc_info=True)
         return None
+
+
+def create_feedback(*, chat_id: int, username: str | None, display_name: str | None, feedback: str) -> str | None:
+    if not enabled() or not feedback.strip():
+        return None
+    feedback_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc)
+    try:
+        with _lock, _connect() as connection:
+            connection.execute(
+                "INSERT INTO feedbacks (id, telegram_chat_id, telegram_username, telegram_display_name, feedback, status, created_at) VALUES (%s, %s, %s, %s, %s, 'new', %s)",
+                (feedback_id, chat_id, username, display_name, feedback[:4096], now),
+            )
+        return feedback_id
+    except Exception:
+        LOG.warning("Could not record feedback", exc_info=True)
+        return None
+
+
+def query_feedback(*, status: str | None = None, q: str | None = None, page: int = 1, page_size: int = 25) -> dict[str, Any]:
+    if not enabled():
+        return {"feedbacks": [], "page": page, "pageSize": page_size, "total": 0, "newCount": 0}
+    page = max(1, page)
+    page_size = min(100, max(1, page_size))
+    clauses: list[str] = []
+    values: list[Any] = []
+    if status in {"new", "reviewed"}:
+        clauses.append("status = %s")
+        values.append(status)
+    if q:
+        needle = f"%{q[:100]}%"
+        clauses.append("(telegram_username ILIKE %s OR telegram_display_name ILIKE %s OR feedback ILIKE %s)")
+        values.extend([needle, needle, needle])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _lock, _connect() as connection:
+        total = connection.execute(f"SELECT COUNT(*) FROM feedbacks {where}", values).fetchone()[0]
+        rows = connection.execute(
+            f"SELECT id, telegram_username, telegram_display_name, feedback, status, created_at, reviewed_at FROM feedbacks {where} ORDER BY created_at DESC LIMIT %s OFFSET %s",
+            [*values, page_size, (page - 1) * page_size],
+        ).fetchall()
+        new_count = connection.execute("SELECT COUNT(*) FROM feedbacks WHERE status = 'new'").fetchone()[0]
+    return {
+        "feedbacks": [
+            {"id": row[0], "telegramUsername": row[1], "telegramDisplayName": row[2], "feedback": row[3], "status": row[4], "createdAt": row[5].isoformat(), "reviewedAt": row[6].isoformat() if row[6] else None}
+            for row in rows
+        ],
+        "page": page, "pageSize": page_size, "total": int(total), "newCount": int(new_count),
+    }
+
+
+def update_feedback_status(feedback_id: str, status: str) -> bool:
+    if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", feedback_id) or status not in {"new", "reviewed"}:
+        return False
+    reviewed_at = datetime.now(timezone.utc) if status == "reviewed" else None
+    with _lock, _connect() as connection:
+        cursor = connection.execute("UPDATE feedbacks SET status = %s, reviewed_at = %s WHERE id = %s", (status, reviewed_at, feedback_id))
+        return cursor.rowcount > 0
+
+
+def delete_feedback(feedback_id: str) -> bool:
+    if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", feedback_id):
+        return False
+    with _lock, _connect() as connection:
+        cursor = connection.execute("DELETE FROM feedbacks WHERE id = %s", (feedback_id,))
+        return cursor.rowcount > 0
 
 
 def query_conversations(*, q: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
