@@ -66,10 +66,12 @@ def initialize() -> None:
                 telegram_display_name TEXT,
                 chat_type TEXT,
                 updated_at TIMESTAMPTZ NOT NULL,
-                admin_read_at TIMESTAMPTZ
+                admin_read_at TIMESTAMPTZ,
+                language_code TEXT
             )
             """)
             connection.execute("ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS admin_read_at TIMESTAMPTZ")
+            connection.execute("ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS language_code TEXT")
             connection.execute("""
             CREATE TABLE IF NOT EXISTS bot_messages (
                 id TEXT PRIMARY KEY,
@@ -130,6 +132,28 @@ def record_contact(*, chat_id: int, username: str | None, display_name: str | No
             )
     except Exception:
         LOG.warning("Could not record bot contact", exc_info=True)
+
+
+def get_language(chat_id: int) -> str | None:
+    if not enabled():
+        return None
+    try:
+        with _lock, _connect() as connection:
+            row = connection.execute("SELECT language_code FROM bot_contacts WHERE chat_id = %s", (chat_id,)).fetchone()
+        return row[0] if row else None
+    except Exception:
+        LOG.warning("Could not read chat language", exc_info=True)
+        return None
+
+
+def set_language(chat_id: int, language_code: str) -> None:
+    if not enabled():
+        return
+    try:
+        with _lock, _connect() as connection:
+            connection.execute("UPDATE bot_contacts SET language_code = %s, updated_at = %s WHERE chat_id = %s", (language_code, datetime.now(timezone.utc), chat_id))
+    except Exception:
+        LOG.warning("Could not save chat language", exc_info=True)
 
 
 def record_message(*, chat_id: int, username: str | None, display_name: str | None, direction: str, text: str, telegram_message_id: int | None = None, delivered: bool = True, error: str | None = None) -> str | None:
