@@ -316,6 +316,9 @@ class PureFunctionTests(unittest.TestCase):
 class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         bot.STATES.clear()
+        for pending in list(bot.PENDING_DELIVERIES.values()):
+            bot.discard_pending_delivery(pending)
+        bot.PENDING_DELIVERIES.clear()
         bot.DOWNLOAD_LOCKS.clear()
         bot.SUPPORT_PROMPT_LAST_SHOWN.clear()
 
@@ -332,6 +335,24 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             await bot.start(update, SimpleNamespace())
         buttons = message.replies[0][1].inline_keyboard
         self.assertEqual(buttons[0][0].text, "☕ Support this bot")
+
+    async def test_feedback_command_saves_text_and_confirms(self):
+        update, message = update_for()
+        context = SimpleNamespace(args=["The", "720p", "option", "works", "well"])
+        try:
+            from backend.bot import activity_store
+        except ModuleNotFoundError:
+            from bot import activity_store
+        with patch.object(activity_store, "create_feedback", return_value="a" * 32) as create_feedback:
+            await bot.feedback_command(update, context)
+        create_feedback.assert_called_once()
+        self.assertEqual(create_feedback.call_args.kwargs["feedback"], "The 720p option works well")
+        self.assertIn("saved", message.replies[0][0])
+
+    async def test_feedback_command_requires_text(self):
+        update, message = update_for()
+        await bot.feedback_command(update, SimpleNamespace(args=[]))
+        self.assertIn("Usage: /feedback", message.replies[0][0])
 
     async def test_support_command_always_works_even_after_prompt_cooldown(self):
         update, message = update_for()
@@ -404,6 +425,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
             return {"title": "Song"}, output, "mp3"
 
         with patch.object(bot, "DELIVERY_MODE", "auto"), \
+             patch.object(bot, "r2_is_configured", return_value=False), \
              patch.object(bot, "DONATION_URL", "https://www.buymeacoffee.com/example"), \
              patch.object(bot, "DONATION_PROMPTS_ENABLED", True), \
              patch.object(bot, "DONATION_PROMPT_COOLDOWN_SECONDS", 86400), \
@@ -441,6 +463,62 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(context.bot.messages), 1)
         self.assertIn("exceeds Telegram's upload limit", context.bot.messages[0]["text"])
         self.assertEqual(context.bot.messages[0]["reply_markup"].inline_keyboard[1][0].text, "☕ Support this bot")
+
+    async def test_auto_mode_asks_for_delivery_when_file_fits_telegram(self):
+        update, source_message = update_for(chat_id=32, user_id=42)
+        key = bot.save_state(update, "https://youtu.be/abc", {"title": "Song"})
+        query = FakeQuery(f"d|mp3|{key}", source_message)
+        update.callback_query = query
+        context = SimpleNamespace(bot=FakeBot())
+
+        def fake_download(url, fmt, tmpdir, progress_callback=None):
+            output = Path(tmpdir) / "abc.mp3"
+            output.write_bytes(b"small audio")
+            return {"title": "Song"}, output, "mp3"
+
+        with patch.object(bot, "DELIVERY_MODE", "auto"), \
+             patch.object(bot, "r2_is_configured", return_value=True), \
+             patch.object(bot, "download_sync", side_effect=fake_download):
+            await bot.button_handler(update, context)
+
+        self.assertFalse(query.deleted)
+        self.assertEqual(len(bot.PENDING_DELIVERIES), 1)
+        pending_key = next(iter(bot.PENDING_DELIVERIES))
+        self.assertIn("How would you like to receive it?", query.edited[-1])
+
+        delivery_query = FakeQuery(f"p|telegram|{pending_key}", source_message)
+        update.callback_query = delivery_query
+        await bot.button_handler(update, context)
+        self.assertTrue(delivery_query.deleted)
+        self.assertEqual(len(context.bot.audio), 1)
+        self.assertFalse(bot.PENDING_DELIVERIES)
+
+    async def test_auto_mode_can_upload_under_limit_file_to_r2_on_request(self):
+        update, source_message = update_for(chat_id=33, user_id=43)
+        key = bot.save_state(update, "https://youtu.be/abc", {"title": "Video"})
+        query = FakeQuery(f"d|720p|{key}", source_message)
+        update.callback_query = query
+        context = SimpleNamespace(bot=FakeBot())
+
+        def fake_download(url, fmt, tmpdir, progress_callback=None):
+            output = Path(tmpdir) / "abc.mp4"
+            output.write_bytes(b"small video")
+            return {"title": "Video"}, output, "mp4"
+
+        with patch.object(bot, "DELIVERY_MODE", "auto"), \
+             patch.object(bot, "r2_is_configured", return_value=True), \
+             patch.object(bot, "download_sync", side_effect=fake_download), \
+             patch.object(bot, "upload_to_r2", return_value="https://downloads.example/video") as upload:
+            await bot.button_handler(update, context)
+            pending_key = next(iter(bot.PENDING_DELIVERIES))
+            delivery_query = FakeQuery(f"p|r2|{pending_key}", source_message)
+            update.callback_query = delivery_query
+            await bot.button_handler(update, context)
+
+        upload.assert_called_once()
+        self.assertTrue(delivery_query.deleted)
+        self.assertIn("You chose a temporary download link", context.bot.messages[0]["text"])
+        self.assertFalse(bot.PENDING_DELIVERIES)
 
     async def test_button_handler_rejects_expired_or_unknown_callback(self):
         update, message = update_for()

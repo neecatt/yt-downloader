@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import tempfile
 import time
 import threading
@@ -82,6 +83,7 @@ MAX_UPLOAD_BYTES = min(4096, max(1, int(os.getenv("TELEGRAM_MAX_UPLOAD_MB", "49"
 MAX_DOWNLOAD_BYTES = min(4096, max(1, int(os.getenv("MAX_DOWNLOAD_MB", "2048")))) * 1024 * 1024
 MAX_URL_LENGTH = max(256, int(os.getenv("MAX_URL_LENGTH", "4096")))
 STATE_TTL_SECONDS = min(86400, max(60, int(os.getenv("CALLBACK_STATE_TTL_SECONDS", "1800"))))
+PENDING_DELIVERY_TTL_SECONDS = min(3600, max(60, int(os.getenv("PENDING_DELIVERY_TTL_SECONDS", "900"))))
 MAX_STATE_ENTRIES = min(100000, max(100, int(os.getenv("MAX_STATE_ENTRIES", "10000"))))
 MAX_WORKERS = min(8, max(1, int(os.getenv("DOWNLOAD_WORKERS", "2"))))
 FRAGMENT_WORKERS = min(16, max(1, int(os.getenv("FRAGMENT_WORKERS", "4"))))
@@ -153,7 +155,22 @@ class LinkState:
     activity_id: str | None = None
 
 
+@dataclass(slots=True)
+class PendingDelivery:
+    directory: Path
+    filename: Path
+    chat_id: int
+    user_id: int
+    info: dict[str, Any]
+    extension: str
+    fmt: str
+    size_bytes: int
+    activity_id: str | None
+    created_at: float
+
+
 STATES: dict[str, LinkState] = {}
+PENDING_DELIVERIES: dict[str, PendingDelivery] = {}
 DOWNLOAD_LOCKS: dict[int, asyncio.Lock] = {}
 SUPPORT_PROMPT_LAST_SHOWN: dict[tuple[int, int], float] = {}
 EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="download")
@@ -210,6 +227,52 @@ def prune_states() -> None:
         excess = len(STATES) - MAX_STATE_ENTRIES
         for key, _ in sorted(STATES.items(), key=lambda item: item[1].created_at)[:excess]:
             STATES.pop(key, None)
+
+
+def prune_pending_deliveries() -> None:
+    cutoff = time.monotonic() - PENDING_DELIVERY_TTL_SECONDS
+    for key, pending in list(PENDING_DELIVERIES.items()):
+        if pending.created_at < cutoff:
+            PENDING_DELIVERIES.pop(key, None)
+            shutil.rmtree(pending.directory, ignore_errors=True)
+
+
+def save_pending_delivery(
+    *, filename: Path, directory: Path, update: Update, info: dict[str, Any],
+    extension: str, fmt: str, size_bytes: int, activity_id: str | None,
+) -> str:
+    prune_pending_deliveries()
+    user = update.effective_user
+    key = secrets.token_urlsafe(9)
+    PENDING_DELIVERIES[key] = PendingDelivery(
+        directory=directory,
+        filename=filename,
+        chat_id=update.effective_chat.id,
+        user_id=user.id if user else 0,
+        info=info,
+        extension=extension,
+        fmt=fmt,
+        size_bytes=size_bytes,
+        activity_id=activity_id,
+        created_at=time.monotonic(),
+    )
+    return key
+
+
+def take_pending_delivery(key: str, update: Update) -> PendingDelivery | None:
+    prune_pending_deliveries()
+    pending = PENDING_DELIVERIES.get(key)
+    if not pending or pending.chat_id != update.effective_chat.id:
+        return None
+    user = update.effective_user
+    if pending.user_id and user and pending.user_id != user.id:
+        return None
+    PENDING_DELIVERIES.pop(key, None)
+    return pending
+
+
+def discard_pending_delivery(pending: PendingDelivery) -> None:
+    shutil.rmtree(pending.directory, ignore_errors=True)
 
 
 def save_state(update: Update, url: str, info: dict[str, Any] | None = None) -> str:
@@ -593,6 +656,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Send a YouTube, TikTok, Instagram, Facebook, X, or LinkedIn link, or use /download <https-url>.\n\n"
         "Choose a quality, then I’ll download it and send it back.\n"
+        "Use /feedback <your feedback> to send feedback.\n"
         "Use /support if you would like to help keep the bot running.",
         reply_markup=support_keyboard(),
     )
@@ -606,6 +670,37 @@ async def support_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
     await send_support_prompt(context, update.effective_chat.id, update.effective_user.id, force=True)
+
+
+async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _record_contact(update)
+    feedback = " ".join(context.args).strip()
+    if not feedback:
+        await update.effective_message.reply_text("Usage: /feedback <your feedback>")
+        return
+    if len(feedback) > 4096:
+        await update.effective_message.reply_text("Please keep feedback under 4096 characters.")
+        return
+    try:
+        try:
+            from .bot import activity_store
+        except ImportError:
+            from bot import activity_store
+        user = update.effective_user
+        chat = update.effective_chat
+        feedback_id = activity_store.create_feedback(
+            chat_id=chat.id,
+            username=f"@{getattr(user, 'username', '')}" if getattr(user, "username", None) else None,
+            display_name=getattr(user, "full_name", None) if user else None,
+            feedback=feedback,
+        )
+    except Exception:
+        feedback_id = None
+        LOG.warning("Could not save user feedback", exc_info=True)
+    if feedback_id:
+        await update.effective_message.reply_text("Thanks — your feedback has been saved.")
+    else:
+        await update.effective_message.reply_text("I couldn’t save that feedback right now. Please try again later.")
 
 
 async def make_choice(update: Update, url: str, info: dict[str, Any] | None = None) -> None:
@@ -701,6 +796,7 @@ async def send_r2_link(
     fmt: str,
     size_bytes: int | None = None,
     reply_markup: InlineKeyboardMarkup | None = None,
+    selected_by_user: bool = False,
 ) -> None:
     title = info.get("title", "Downloaded file")
     size_text = f"{size_bytes / 1024 / 1024:.1f} MB" if size_bytes else "large"
@@ -713,11 +809,21 @@ async def send_r2_link(
         chat_id=chat_id,
         text=(
             f"✅ Ready: {title[:700]}\nFormat: {fmt}\nSize: {size_text}\n\n"
-            "The media exceeds Telegram's upload limit, so I’m giving you a "
-            "temporary download link instead."
+            + (
+                "You chose a temporary download link."
+                if selected_by_user
+                else "The media exceeds Telegram's upload limit, so I’m giving you a temporary download link instead."
+            )
         ),
         reply_markup=keyboard,
     )
+
+
+def delivery_choice_keyboard(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📨 Send through Telegram", callback_data=f"p|telegram|{key}")],
+        [InlineKeyboardButton("⬇️ Give me a download link", callback_data=f"p|r2|{key}")],
+    ])
 
 
 async def run_download_with_progress(
@@ -759,14 +865,75 @@ async def run_download_with_progress(
     return result
 
 
+async def pending_delivery_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str, key: str) -> None:
+    query = update.callback_query
+    if mode == "r2" and not r2_is_configured():
+        await query.edit_message_text("Download links are not configured. Please choose Telegram delivery instead.")
+        return
+    pending = take_pending_delivery(key, update)
+    if not pending:
+        await query.edit_message_text("That delivery choice has expired. Please send the link again.")
+        return
+    lock = DOWNLOAD_LOCKS.setdefault(pending.chat_id, asyncio.Lock())
+    try:
+        async with lock:
+            loop = asyncio.get_running_loop()
+            if mode == "telegram":
+                await query.edit_message_text("⬆️ Uploading to Telegram…\nDownload: 100%")
+                await send_file(context, pending.chat_id, pending.filename, pending.info, pending.extension, pending.fmt)
+                await send_support_prompt(context, pending.chat_id, pending.user_id)
+                delivery = "telegram"
+            else:
+                await query.edit_message_text("☁️ Preparing your download link…")
+                download_url = await loop.run_in_executor(
+                    EXECUTOR, upload_to_r2, pending.filename, pending.info, pending.extension
+                )
+                offer_support = support_prompt_allowed(pending.chat_id, pending.user_id)
+                await send_r2_link(
+                    context, pending.chat_id, download_url, pending.info, pending.fmt,
+                    pending.size_bytes, support_keyboard() if offer_support else None,
+                    selected_by_user=True,
+                )
+                if offer_support:
+                    mark_support_prompt_shown(pending.chat_id, pending.user_id)
+                delivery = "r2"
+            _update_activity(
+                pending.activity_id,
+                status="completed",
+                fmt=pending.fmt,
+                delivery=delivery,
+                size_bytes=pending.size_bytes,
+                duration_ms=int(pending.info.get("duration", 0) * 1000) if pending.info.get("duration") else None,
+                title=pending.info.get("title"),
+            )
+            await query.delete_message()
+    except (TelegramError, BadRequest):
+        LOG.exception("Pending delivery failed for chat %s", pending.chat_id)
+        _update_activity(pending.activity_id, status="failed", error="Telegram could not accept the file")
+        await query.edit_message_text("Telegram could not accept the file. Please try the other delivery option.")
+    except Exception as exc:
+        LOG.info("pending delivery failed: %s", safe_log_error(exc))
+        _update_activity(pending.activity_id, status="failed", error=display_error(exc))
+        await query.edit_message_text(f"❌ {display_error(exc)}")
+    finally:
+        discard_pending_delivery(pending)
+
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     try:
-        _, fmt, key = query.data.split("|", 2)
+        action, value, key = query.data.split("|", 2)
     except (AttributeError, ValueError):
         await query.edit_message_text("That button is no longer valid. Please send the link again.")
         return
+    if action == "p":
+        await pending_delivery_handler(update, context, value, key)
+        return
+    if action != "d":
+        await query.edit_message_text("That button is no longer valid. Please send the link again.")
+        return
+    fmt = value
     state = get_state(key, update)
     if not state:
         await query.edit_message_text("That link has expired. Please send it again.")
@@ -781,43 +948,51 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         await query.edit_message_text(f"⬇️ Downloading {fmt}…")
         await context.bot.send_chat_action(chat_id=state.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+        download_directory = Path(tempfile.mkdtemp(prefix="ytbot-"))
+        keep_pending = False
         try:
-            with tempfile.TemporaryDirectory(prefix="ytbot-") as tmpdir:
-                loop = asyncio.get_running_loop()
-                info, filename, extension = await run_download_with_progress(loop, state.url, fmt, tmpdir, query)
-                file_size = filename.stat().st_size
-                delivery = None
-                if DELIVERY_MODE == "r2":
-                    await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
-                    download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
-                    offer_support = support_prompt_allowed(state.chat_id, state.user_id)
-                    await send_r2_link(
-                        context, state.chat_id, download_url, info, fmt, file_size,
-                        support_keyboard() if offer_support else None,
-                    )
-                    if offer_support:
-                        mark_support_prompt_shown(state.chat_id, state.user_id)
-                    delivery = "r2"
-                elif DELIVERY_MODE == "auto" and file_size > MAX_UPLOAD_BYTES and r2_is_configured():
-                    await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
-                    download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
-                    offer_support = support_prompt_allowed(state.chat_id, state.user_id)
-                    await send_r2_link(
-                        context, state.chat_id, download_url, info, fmt, file_size,
-                        support_keyboard() if offer_support else None,
-                    )
-                    if offer_support:
-                        mark_support_prompt_shown(state.chat_id, state.user_id)
-                    delivery = "r2"
-                elif file_size <= MAX_UPLOAD_BYTES:
-                    await query.edit_message_text("⬆️ Uploading to Telegram…\nDownload: 100%")
-                    await send_file(context, state.chat_id, filename, info, extension, fmt)
-                    await send_support_prompt(context, state.chat_id, state.user_id)
-                    delivery = "telegram"
-                else:
-                    raise ValueError("The file exceeds Telegram's upload limit and cloud delivery is not configured")
-                _update_activity(state.activity_id, status="completed", fmt=fmt, delivery=delivery, size_bytes=file_size, duration_ms=int(info.get("duration", 0) * 1000) if info.get("duration") else None, title=info.get("title"))
-                await query.delete_message()
+            loop = asyncio.get_running_loop()
+            info, filename, extension = await run_download_with_progress(loop, state.url, fmt, str(download_directory), query)
+            file_size = filename.stat().st_size
+            delivery = None
+            if DELIVERY_MODE == "r2":
+                await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
+                download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
+                offer_support = support_prompt_allowed(state.chat_id, state.user_id)
+                await send_r2_link(context, state.chat_id, download_url, info, fmt, file_size, support_keyboard() if offer_support else None)
+                if offer_support:
+                    mark_support_prompt_shown(state.chat_id, state.user_id)
+                delivery = "r2"
+            elif DELIVERY_MODE == "auto" and file_size > MAX_UPLOAD_BYTES and r2_is_configured():
+                await query.edit_message_text("☁️ Uploading to cloud storage…\nDownload: 100%")
+                download_url = await loop.run_in_executor(EXECUTOR, upload_to_r2, filename, info, extension)
+                offer_support = support_prompt_allowed(state.chat_id, state.user_id)
+                await send_r2_link(context, state.chat_id, download_url, info, fmt, file_size, support_keyboard() if offer_support else None)
+                if offer_support:
+                    mark_support_prompt_shown(state.chat_id, state.user_id)
+                delivery = "r2"
+            elif DELIVERY_MODE == "auto" and file_size <= MAX_UPLOAD_BYTES and r2_is_configured():
+                pending_key = save_pending_delivery(
+                    filename=filename, directory=download_directory, update=update, info=info,
+                    extension=extension, fmt=fmt, size_bytes=file_size, activity_id=state.activity_id,
+                )
+                keep_pending = True
+                await query.edit_message_text(
+                    f"✅ Ready: {info.get('title', 'Downloaded file')[:700]}\n"
+                    f"Size: {file_size / 1024 / 1024:.1f} MB\n\n"
+                    "How would you like to receive it?",
+                    reply_markup=delivery_choice_keyboard(pending_key),
+                )
+                return
+            elif file_size <= MAX_UPLOAD_BYTES:
+                await query.edit_message_text("⬆️ Uploading to Telegram…\nDownload: 100%")
+                await send_file(context, state.chat_id, filename, info, extension, fmt)
+                await send_support_prompt(context, state.chat_id, state.user_id)
+                delivery = "telegram"
+            else:
+                raise ValueError("The file exceeds Telegram's upload limit and cloud delivery is not configured")
+            _update_activity(state.activity_id, status="completed", fmt=fmt, delivery=delivery, size_bytes=file_size, duration_ms=int(info.get("duration", 0) * 1000) if info.get("duration") else None, title=info.get("title"))
+            await query.delete_message()
         except (TelegramError, BadRequest):
             LOG.exception("Telegram upload failed for chat %s", state.chat_id)
             _update_activity(state.activity_id, status="failed", error="Telegram could not accept the file")
@@ -827,15 +1002,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             _update_activity(state.activity_id, status="failed", error=display_error(exc))
             await query.edit_message_text(f"❌ {display_error(exc)}")
         finally:
+            if not keep_pending:
+                shutil.rmtree(download_directory, ignore_errors=True)
             STATES.pop(key, None)
 
 
 R2_CLEANUP_TASK: asyncio.Task[Any] | None = None
+PENDING_DELIVERY_CLEANUP_TASK: asyncio.Task[Any] | None = None
+
+
+async def pending_delivery_cleanup_loop() -> None:
+    interval = min(60, max(30, PENDING_DELIVERY_TTL_SECONDS // 3))
+    while True:
+        prune_pending_deliveries()
+        await asyncio.sleep(interval)
 
 
 async def post_init(application: Application) -> None:
-    global R2_CLEANUP_TASK
+    global R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK
     LOG.info("Bot started with %s download worker(s)", MAX_WORKERS)
+    PENDING_DELIVERY_CLEANUP_TASK = asyncio.create_task(
+        pending_delivery_cleanup_loop(), name="pending-delivery-cleanup"
+    )
     if r2_is_configured():
         R2_CLEANUP_TASK = asyncio.create_task(
             cleanup_loop(
@@ -855,11 +1043,17 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
-    global R2_CLEANUP_TASK
-    if R2_CLEANUP_TASK:
-        R2_CLEANUP_TASK.cancel()
-        await asyncio.gather(R2_CLEANUP_TASK, return_exceptions=True)
-        R2_CLEANUP_TASK = None
+    global R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK
+    tasks = [task for task in (R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK) if task]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    R2_CLEANUP_TASK = None
+    PENDING_DELIVERY_CLEANUP_TASK = None
+    for pending in list(PENDING_DELIVERIES.values()):
+        discard_pending_delivery(pending)
+    PENDING_DELIVERIES.clear()
 
 
 def start_admin_api() -> threading.Thread | None:
@@ -897,8 +1091,9 @@ def main() -> None:
     application = builder.build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("support", support_command))
+    application.add_handler(CommandHandler("feedback", feedback_command))
     application.add_handler(CommandHandler("download", download_command))
-    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^d\|"))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(?:d|p)\|"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
