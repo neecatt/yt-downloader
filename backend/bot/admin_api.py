@@ -155,6 +155,46 @@ def create_app() -> FastAPI:
         sent, failed = await _send_to_chats(chat_ids[:MAX_MESSAGE_RECIPIENTS], text)
         return JSONResponse({"username": username, "targeted": len(chat_ids), "sent": sent, "failed": failed}, headers={"Cache-Control": "no-store"})
 
+    @app.get("/admin/feedback")
+    async def feedback(request: Request, authorization: str | None = Header(default=None), q: str | None = Query(default=None), status: str | None = Query(default=None), page: int = Query(default=1, ge=1), page_size: int = Query(default=25, alias="pageSize", ge=1, le=100)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        try:
+            result = activity_store.query_feedback(status=status, q=q, page=page, page_size=page_size)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Feedback database unavailable") from None
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.patch("/admin/feedback/{feedback_id}")
+    async def update_feedback(feedback_id: str, request: Request, payload: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        status = payload.get("status")
+        if status not in {"new", "reviewed"}:
+            raise HTTPException(status_code=400, detail="Status must be new or reviewed")
+        try:
+            updated = activity_store.update_feedback_status(feedback_id, status)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Feedback database unavailable") from None
+        if not updated:
+            raise HTTPException(status_code=404, detail="Feedback not found")
+        return JSONResponse({"updated": True}, headers={"Cache-Control": "no-store"})
+
+    @app.delete("/admin/feedback/{feedback_id}")
+    async def remove_feedback(feedback_id: str, request: Request, authorization: str | None = Header(default=None)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        try:
+            deleted = activity_store.delete_feedback(feedback_id)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Feedback database unavailable") from None
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Feedback not found")
+        return JSONResponse({"deleted": True}, headers={"Cache-Control": "no-store"})
+
     @app.get("/admin/conversations")
     async def conversations(request: Request, authorization: str | None = Header(default=None), q: str | None = Query(default=None), limit: int = Query(default=50, ge=1, le=100)) -> JSONResponse:
         _rate_limit(request)
