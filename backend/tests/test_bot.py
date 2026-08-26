@@ -27,6 +27,7 @@ class FakeMessage:
         self.replies: list[tuple[str, object]] = []
         self.deleted = False
         self.edited: list[str] = []
+        self.documents = []
 
     async def reply_text(self, text: str, **kwargs):
         self.replies.append((text, kwargs.get("reply_markup")))
@@ -38,6 +39,9 @@ class FakeMessage:
 
     async def delete(self):
         self.deleted = True
+
+    async def reply_document(self, **kwargs):
+        self.documents.append(kwargs)
 
 
 class FakeBot:
@@ -360,6 +364,33 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/download", message.replies[0][0])
         self.assertIn("YouTube", message.replies[0][0])
         self.assertIn("/settings", message.replies[0][0])
+
+    async def test_transcribe_command_reports_unconfigured_service(self):
+        update, message = update_for()
+        with patch.object(bot, "transcription_is_configured", return_value=False):
+            await bot.transcribe_command(update, SimpleNamespace(args=["https://youtu.be/abc"]))
+        self.assertIn("not available", message.replies[0][0])
+
+    async def test_transcribe_callback_delivers_text_file(self):
+        update, message = update_for(chat_id=55, user_id=65)
+        key = bot.save_state(update, "https://youtu.be/abc", {"title": "Talk"})
+        query = FakeQuery(f"t|{key}", message)
+        update.callback_query = query
+        result = {"title": "Talk", "language": "en", "text": "Hello world", "segments": [{"start": 0, "text": "Hello world"}]}
+        audio_path = Path(tempfile.mkdtemp()) / "audio.mp3"
+        audio_path.write_bytes(b"audio")
+        with patch.object(bot, "transcription_is_configured", return_value=True), \
+             patch.object(bot, "r2_is_configured", return_value=True), \
+             patch.object(bot, "download_sync", return_value=({"title": "Talk", "duration": 60}, audio_path, "mp3")), \
+             patch.object(bot, "upload_to_r2_with_key", return_value=("https://r2.example/audio", "downloads/test.mp3")), \
+             patch.object(bot, "delete_r2_object") as delete_object, \
+             patch.object(bot, "transcribe_audio_url_sync", return_value=result):
+            await bot.button_handler(update, SimpleNamespace())
+        self.assertTrue(query.deleted)
+        self.assertEqual(len(message.documents), 1)
+        self.assertEqual(message.documents[0]["filename"], "Talk.txt")
+        delete_object.assert_called_once_with("downloads/test.mp3")
+        self.assertNotIn(key, bot.STATES)
 
     async def test_feedback_command_saves_text_and_confirms(self):
         update, message = update_for()

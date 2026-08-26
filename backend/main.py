@@ -27,6 +27,13 @@ import yt_dlp
 try:
     from .bot.cookies import prepare_cookie_file as _prepare_cookie_file
     from .bot.media import display_error, format_duration, progress_text, safe_filename
+    from .bot.observability import configure_logging, log_timing
+    from .bot.transcription import (
+        format_transcript,
+        transcript_filename,
+        transcribe_audio_url_sync,
+        transcription_is_configured,
+    )
     from .bot.limits import SlidingWindowLimiter
     from .bot.r2_cleanup import cleanup_loop, schedule_object_delete
     from .bot.security import (
@@ -40,6 +47,13 @@ try:
 except ImportError:  # Supports running `python main.py` in backend.
     from bot.cookies import prepare_cookie_file as _prepare_cookie_file
     from bot.media import display_error, format_duration, progress_text, safe_filename
+    from bot.observability import configure_logging, log_timing
+    from bot.transcription import (
+        format_transcript,
+        transcript_filename,
+        transcribe_audio_url_sync,
+        transcription_is_configured,
+    )
     from bot.limits import SlidingWindowLimiter
     from bot.r2_cleanup import cleanup_loop, schedule_object_delete
     from bot.security import (
@@ -79,6 +93,7 @@ from telegram.ext import (
 LOG = logging.getLogger("downloader_bot")
 
 load_dotenv()
+configure_logging()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MAX_UPLOAD_BYTES = min(4096, max(1, int(os.getenv("TELEGRAM_MAX_UPLOAD_MB", "49")))) * 1024 * 1024
@@ -428,7 +443,7 @@ def _record_chat_message(update: Update, text: str) -> None:
         LOG.warning("Could not record incoming chat message", exc_info=True)
 
 
-def _create_activity_event(update: Update, url: str, info: dict[str, Any] | None) -> str | None:
+def _create_activity_event(update: Update, url: str, info: dict[str, Any] | None, *, action: str = "download") -> str | None:
     try:
         try:
             from .bot import activity_store
@@ -446,7 +461,7 @@ def _create_activity_event(update: Update, url: str, info: dict[str, Any] | None
             source_url=url,
             title=(info or {}).get("title"),
             platform=_activity_platform(url),
-            action="download",
+            action=action,
         )
     except Exception:
         LOG.warning("Could not initialize activity event", exc_info=True)
@@ -497,6 +512,16 @@ def support_keyboard(language: str = "en") -> InlineKeyboardMarkup | None:
     return InlineKeyboardMarkup([buttons])
 
 
+def transcription_fallback_keyboard(key: str, language: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(tr(language, "transcribe"), callback_data=f"t|{key}")]])
+
+
+def should_offer_transcription_fallback(exc: Exception) -> bool:
+    """Offer the alternate path only for source-access checks, not private/media errors."""
+    message = str(exc).lower()
+    return any(marker in message for marker in ("access check", "not a bot", "sign in to confirm", "po token"))
+
+
 async def send_support_prompt(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int, *, force: bool = False, language: str | None = None) -> bool:
     if not force and not support_prompt_allowed(chat_id, user_id):
         return False
@@ -542,6 +567,13 @@ def r2_client():
 
 def upload_to_r2(filename: Path, info: dict[str, Any], extension: str) -> str:
     """Upload a completed file and return a temporary browser download URL."""
+    url, _ = upload_to_r2_with_key(filename, info, extension)
+    return url
+
+
+def upload_to_r2_with_key(filename: Path, info: dict[str, Any], extension: str) -> tuple[str, str]:
+    """Upload a file and return its temporary URL plus object key."""
+    started = time.perf_counter()
     from boto3.s3.transfer import TransferConfig
 
     title = info.get("title", "download")
@@ -569,11 +601,24 @@ def upload_to_r2(filename: Path, info: dict[str, Any], extension: str) -> str:
     )
     if R2_PUBLIC_BASE_URL:
         LOG.warning("R2_PUBLIC_BASE_URL is ignored; temporary downloads require private presigned URLs")
-    return client.generate_presigned_url(
+    url = client.generate_presigned_url(
         "get_object",
         Params={"Bucket": R2_BUCKET_NAME, "Key": object_key, "ResponseContentDisposition": f'attachment; filename="{download_name}"'},
         ExpiresIn=R2_PRESIGNED_URL_TTL,
     )
+    log_timing(LOG, "r2_upload_finished", started, size_bytes=filename.stat().st_size, extension=extension)
+    return url, object_key
+
+
+def delete_r2_object(object_key: str) -> None:
+    if not object_key or not r2_is_configured():
+        return
+    started = time.perf_counter()
+    try:
+        r2_client().delete_object(Bucket=R2_BUCKET_NAME, Key=object_key)
+        log_timing(LOG, "r2_transcription_cleanup_finished", started)
+    except Exception:
+        LOG.warning("Could not immediately delete temporary transcription object", exc_info=True)
 
 
 def ydl_base_options(tmpdir: str, progress_callback: ProgressCallback | None = None) -> dict[str, Any]:
@@ -650,6 +695,8 @@ def ydl_options(tmpdir: str, fmt: str, progress_callback: ProgressCallback | Non
 
 
 def analyze_url(url: str) -> dict[str, Any]:
+    started = time.perf_counter()
+    LOG.info("event=analysis_started source=%s", safe_log_url(url))
     validate_remote_url(url)
     options = ydl_base_options(tempfile.gettempdir())
     options.update({"quiet": True, "no_warnings": True, "noplaylist": True, "extract_flat": True})
@@ -661,11 +708,14 @@ def analyze_url(url: str) -> dict[str, Any]:
         raise ValueError("This is a carousel or multiple-media post")
     if is_image_or_carousel_info(info):
         raise ValueError("This is an image post")
+    log_timing(LOG, "analysis_finished", started, source=safe_log_url(url))
     return info
 
 
 def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCallback | None = None) -> tuple[dict[str, Any], Path, str]:
+    started = time.perf_counter()
     validate_remote_url(url)
+    LOG.info("event=download_started source=%s format=%s", safe_log_url(url), fmt)
     options = ydl_options(tmpdir, fmt, progress_callback)
     for attempt in range(2):
         try:
@@ -678,8 +728,10 @@ def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCa
             if filename.stat().st_size > MAX_DOWNLOAD_BYTES:
                 raise ValueError("The downloaded file exceeds the configured size limit")
             extension = "mp3" if fmt.startswith("mp3") else filename.suffix.lstrip(".").lower() or "mp4"
+            log_timing(LOG, "download_finished", started, source=safe_log_url(url), format=fmt, size_bytes=filename.stat().st_size)
             return info, filename, extension
         except Exception as exc:
+            LOG.warning("event=download_attempt_failed attempt=%s format=%s error=%s", attempt + 1, fmt, safe_log_error(exc))
             if attempt == 1:
                 raise
             if "403" in str(exc):
@@ -764,7 +816,8 @@ async def feedback_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _record_contact(update)
-    await update.effective_message.reply_text(tr(language_for_update(update), "help"))
+    language = language_for_update(update)
+    await update.effective_message.reply_text(f"{tr(language, 'help')}\n\n{tr(language, 'transcription_help')}")
 
 
 async def make_choice(update: Update, url: str, info: dict[str, Any] | None = None) -> None:
@@ -779,6 +832,7 @@ async def make_choice(update: Update, url: str, info: dict[str, Any] | None = No
         [InlineKeyboardButton(tr(language, "best"), callback_data=f"d|best|{key}")],
         [InlineKeyboardButton(tr(language, "mp3_128"), callback_data=f"d|mp3_128|{key}"), InlineKeyboardButton(tr(language, "mp3_192"), callback_data=f"d|mp3_192|{key}")],
         [InlineKeyboardButton(tr(language, "mp3_320"), callback_data=f"d|mp3_320|{key}")],
+        [InlineKeyboardButton(tr(language, "transcribe"), callback_data=f"t|{key}")],
     ]
     await update.effective_message.reply_text(
         tr(language, "choose_format", title=title, duration=duration_line),
@@ -807,7 +861,109 @@ async def download_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await make_choice(update, url, info)
     except Exception as exc:
         LOG.info("analysis failed for %s: %s", safe_log_url(url), safe_log_error(exc))
-        await status.edit_text(display_error(exc, language))
+        if should_offer_transcription_fallback(exc) and transcription_is_configured() and r2_is_configured():
+            key = save_state(update, url)
+            await status.edit_text(
+                f"{display_error(exc, language)}\n\n{tr(language, 'transcription_fallback')}",
+                reply_markup=transcription_fallback_keyboard(key, language),
+            )
+        else:
+            await status.edit_text(display_error(exc, language))
+
+
+async def transcribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Transcribe a link directly, without making the user choose a download format."""
+    _record_contact(update)
+    language = language_for_update(update)
+    if not context.args:
+        await update.effective_message.reply_text(tr(language, "transcribe_usage"))
+        return
+    url = extract_url(context.args[0], any_https=ALLOW_GENERIC_HTTPS)
+    if not url:
+        await update.effective_message.reply_text(tr(language, "transcribe_url"))
+        return
+    if not transcription_is_configured():
+        await update.effective_message.reply_text(tr(language, "transcription_unavailable"))
+        return
+    if not r2_is_configured():
+        await update.effective_message.reply_text(tr(language, "transcription_storage"))
+        return
+    user_id = update.effective_user.id if update.effective_user else 0
+    if not allow_analysis(user_id):
+        await update.effective_message.reply_text(tr(language, "analysis_limit"))
+        return
+    status = await update.effective_message.reply_text(tr(language, "transcription_starting"))
+    activity_id = _create_activity_event(update, url, None, action="transcribe")
+    await _run_transcription(update, status, url, language, activity_id=activity_id)
+
+
+async def _run_transcription(update: Update, status: Any, url: str, language: str, *, activity_id: str | None = None) -> None:
+    """Run Modal in the existing worker pool and deliver a transcript artifact."""
+    async def edit(text: str) -> None:
+        method = getattr(status, "edit_message_text", None) or getattr(status, "edit_text")
+        await method(text)
+
+    async def remove() -> None:
+        method = getattr(status, "delete_message", None) or getattr(status, "delete")
+        await method()
+
+    directory = Path(tempfile.mkdtemp(prefix="transcription-"))
+    object_key: str | None = None
+    transcription_started = time.perf_counter()
+    try:
+        await edit(tr(language, "downloading", fmt="mp3"))
+        download_started = time.perf_counter()
+        info, audio_file, _ = await asyncio.get_running_loop().run_in_executor(
+            EXECUTOR, download_sync, url, "mp3", str(directory)
+        )
+        LOG.info("transcription stage=railway_audio_download seconds=%.2f", time.perf_counter() - download_started)
+        await edit(tr(language, "transcription_processing"))
+        upload_started = time.perf_counter()
+        audio_url, object_key = await asyncio.get_running_loop().run_in_executor(
+            EXECUTOR, upload_to_r2_with_key, audio_file, info, "mp3"
+        )
+        LOG.info("transcription stage=r2_upload seconds=%.2f", time.perf_counter() - upload_started)
+        modal_started = time.perf_counter()
+        result = await asyncio.get_running_loop().run_in_executor(
+            EXECUTOR,
+            transcribe_audio_url_sync,
+            audio_url,
+            str(info.get("title") or "Transcript"),
+            info.get("duration"),
+        )
+        LOG.info("transcription stage=modal_total seconds=%.2f total_seconds=%.2f", time.perf_counter() - modal_started, time.perf_counter() - transcription_started)
+        transcript = format_transcript(result)
+        filename = transcript_filename(str(result.get("title") or "transcript"))
+        await remove()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", encoding="utf-8", delete=False) as artifact:
+            artifact.write(transcript)
+            artifact_path = Path(artifact.name)
+        try:
+            with artifact_path.open("rb") as document:
+                await update.effective_message.reply_document(
+                    document=document,
+                    filename=filename,
+                    caption=tr(language, "transcription_ready", detected_language=result.get("language", "unknown")),
+                    read_timeout=120,
+                    write_timeout=120,
+                )
+            _update_activity(
+                activity_id,
+                status="completed",
+                action="transcribe",
+                title=result.get("title"),
+                duration_ms=int(float(result.get("duration") or 0) * 1000) if result.get("duration") else None,
+            )
+        finally:
+            artifact_path.unlink(missing_ok=True)
+    except Exception as exc:
+        LOG.info("transcription failed for %s: %s", safe_log_url(url), safe_log_error(exc))
+        _update_activity(activity_id, status="failed", action="transcribe", error=display_error(exc, language))
+        await edit(display_error(exc, language))
+    finally:
+        if object_key:
+            await asyncio.get_running_loop().run_in_executor(EXECUTOR, delete_r2_object, object_key)
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -834,12 +990,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await make_choice(update, url, info)
         except Exception as exc:
             LOG.info("media-type analysis failed for %s: %s", safe_log_url(url), safe_log_error(exc))
-            await status.edit_text(display_error(exc, language))
+            if should_offer_transcription_fallback(exc) and transcription_is_configured() and r2_is_configured():
+                key = save_state(update, url)
+                await status.edit_text(
+                    f"{display_error(exc, language)}\n\n{tr(language, 'transcription_fallback')}",
+                    reply_markup=transcription_fallback_keyboard(key, language),
+                )
+            else:
+                await status.edit_text(display_error(exc, language))
         return
     await make_choice(update, url)
 
 
 async def send_file(context: ContextTypes.DEFAULT_TYPE, chat_id: int, filename: Path, info: dict[str, Any], extension: str, fmt: str) -> None:
+    started = time.perf_counter()
     size = filename.stat().st_size
     if size > MAX_UPLOAD_BYTES:
         raise ValueError("The file is too large for the configured Telegram upload limit")
@@ -853,6 +1017,7 @@ async def send_file(context: ContextTypes.DEFAULT_TYPE, chat_id: int, filename: 
             await context.bot.send_video(chat_id=chat_id, video=media, filename=name, supports_streaming=True, caption=caption, read_timeout=300, write_timeout=300)
         else:
             await context.bot.send_document(chat_id=chat_id, document=media, filename=name, caption=caption, read_timeout=300, write_timeout=300)
+    log_timing(LOG, "telegram_delivery_finished", started, chat_id=chat_id, size_bytes=size, extension=extension)
 
 
 async def send_r2_link(
@@ -941,6 +1106,8 @@ async def pending_delivery_handler(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text(tr(language, "delivery_expired"))
         return
     lock = DOWNLOAD_LOCKS.setdefault(pending.chat_id, asyncio.Lock())
+    delivery_started = time.perf_counter()
+    LOG.info("event=delivery_job_started chat_id=%s mode=%s", pending.chat_id, mode)
     try:
         async with lock:
             loop = asyncio.get_running_loop()
@@ -983,6 +1150,7 @@ async def pending_delivery_handler(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text(f"❌ {display_error(exc, language)}")
     finally:
         discard_pending_delivery(pending)
+        log_timing(LOG, "delivery_job_finished", delivery_started, chat_id=pending.chat_id, mode=mode)
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -991,6 +1159,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if isinstance(query.data, str) and query.data.startswith("lang|"):
         _, language = query.data.split("|", 1)
         await language_button_handler(update, context, language)
+        return
+    if isinstance(query.data, str) and query.data.startswith("t|"):
+        _, key = query.data.split("|", 1)
+        language = language_for_update(update)
+        state = get_state(key, update)
+        if not state:
+            await query.edit_message_text(tr(language, "link_expired"))
+            return
+        if not transcription_is_configured():
+            await query.edit_message_text(tr(language, "transcription_unavailable"))
+            return
+        if not r2_is_configured():
+            await query.edit_message_text(tr(language, "transcription_storage"))
+            return
+        if not allow_analysis(state.user_id):
+            await query.edit_message_text(tr(language, "analysis_limit"))
+            return
+        _update_activity(state.activity_id, status="started", action="transcribe")
+        await _run_transcription(update, query, state.url, language, activity_id=state.activity_id)
+        STATES.pop(key, None)
         return
     try:
         action, value, key = query.data.split("|", 2)
@@ -1013,6 +1201,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if lock.locked():
         await query.edit_message_text(tr(language, "already_running"))
         return
+    job_started = time.perf_counter()
+    LOG.info(
+        "event=download_job_started chat_id=%s source=%s format=%s",
+        state.chat_id,
+        safe_log_url(state.url),
+        fmt,
+    )
     async with lock:
         if not allow_download(state.user_id):
             await query.edit_message_text(tr(language, "download_limit"))
@@ -1074,6 +1269,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             if not keep_pending:
                 shutil.rmtree(download_directory, ignore_errors=True)
             STATES.pop(key, None)
+            log_timing(
+                LOG,
+                "download_job_finished",
+                job_started,
+                chat_id=state.chat_id,
+                format=fmt,
+                source=safe_log_url(state.url),
+            )
 
 
 R2_CLEANUP_TASK: asyncio.Task[Any] | None = None
@@ -1094,6 +1297,7 @@ async def post_init(application: Application) -> None:
         BotCommand("start", "Show the welcome screen"),
         BotCommand("help", "Show usage instructions"),
         BotCommand("download", "Download a video from a link"),
+        BotCommand("transcribe", "Transcribe speech from a video link"),
         BotCommand("feedback", "Send feedback"),
         BotCommand("support", "Support the bot"),
         BotCommand("settings", "Change language"),
@@ -1160,6 +1364,11 @@ def main() -> None:
         from bot import activity_store
     activity_store.initialize()
     start_admin_api()
+    LOG.info(
+        "event=application_starting delivery_mode=%s max_workers=%s max_download_mb=%s telegram_limit_mb=%s r2_configured=%s admin_api=%s",
+        DELIVERY_MODE, MAX_WORKERS, MAX_DOWNLOAD_BYTES // (1024 * 1024),
+        MAX_UPLOAD_BYTES // (1024 * 1024), r2_is_configured(), bool(ADMIN_API_TOKEN and ADMIN_API_ENABLED),
+    )
     builder = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).post_shutdown(post_shutdown)
     if TELEGRAM_API_BASE_URL:
         builder = builder.base_url(TELEGRAM_API_BASE_URL)
@@ -1172,8 +1381,10 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("download", download_command))
-    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(?:d|p|lang)\|"))
+    application.add_handler(CommandHandler("transcribe", transcribe_command))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(?:d|p|t|lang)\|"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    LOG.info("event=telegram_polling_start")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

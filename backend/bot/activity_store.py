@@ -308,13 +308,13 @@ def mark_conversation_read(chat_id: int) -> None:
         LOG.warning("Could not mark conversation read", exc_info=True)
 
 
-def update_event(event_id: str | None, *, status: str, fmt: str | None = None, delivery: str | None = None, size_bytes: int | None = None, duration_ms: int | None = None, title: str | None = None, error: str | None = None) -> None:
+def update_event(event_id: str | None, *, status: str, fmt: str | None = None, delivery: str | None = None, size_bytes: int | None = None, duration_ms: int | None = None, title: str | None = None, error: str | None = None, action: str | None = None) -> None:
     if not event_id:
         return
     now = datetime.now(timezone.utc)
     fields = ["status = %s", "updated_at = %s"]
     values: list[Any] = [status, now]
-    for name, value in (("format", fmt), ("delivery", delivery), ("size_bytes", size_bytes), ("duration_ms", duration_ms), ("title", title), ("error", error)):
+    for name, value in (("format", fmt), ("delivery", delivery), ("size_bytes", size_bytes), ("duration_ms", duration_ms), ("title", title), ("error", error), ("action", action)):
         if value is not None:
             fields.append(f"{name} = %s"); values.append(value)
     values.append(event_id)

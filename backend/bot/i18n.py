@@ -91,6 +91,43 @@ _TEXT["en"]["help"] = "🎬 How to use this bot\n\n1. Send a public video link f
 _TEXT["ru"]["help"] = "🎬 Как пользоваться ботом\n\n1. Отправьте публичную ссылку с YouTube, TikTok, Instagram, Facebook, X или LinkedIn.\n2. Выберите качество видео или битрейт MP3.\n3. Для файлов в пределах лимита Telegram выберите отправку в Telegram или временную ссылку. Большие файлы автоматически получают временную ссылку.\n\nДоступные варианты:\n• Видео: 360p, 480p, 720p, 1080p или лучшее качество\n• Аудио: MP3 128, 192 или 320 кбит/с\n\nПоддерживаются только публичные видеопубликации. Приватные аккаунты, материалы с авторизацией, изображения, фотографии и карусели не поддерживаются.\n\nКоманды:\n/start — Открыть приветствие\n/help — Показать эту справку\n/download <ссылка> — Начать загрузку\n/feedback <текст> — Отправить отзыв\n/support — Поддержать бота\n/settings — Изменить язык"
 _TEXT["az"]["help"] = "🎬 Botdan necə istifadə etməli\n\n1. YouTube, TikTok, Instagram, Facebook, X və ya LinkedIn-dən ictimai video linki göndərin.\n2. Video keyfiyyətini və ya MP3 bitreytini seçin.\n3. Telegram limitinə uyğun fayllar üçün Telegram-a göndərilməni və ya müvəqqəti linki seçin. Böyük fayllar avtomatik olaraq müvəqqəti linklə təqdim edilir.\n\nMövcud seçimlər:\n• Video: 360p, 480p, 720p, 1080p və ya ən yaxşı keyfiyyət\n• Audio: 128, 192 və ya 320 kbit/s MP3\n\nYalnız ictimai video paylaşımları dəstəklənir. Şəxsi hesablar, giriş tələb edən məzmun, şəkillər və karusellər dəstəklənmir.\n\nƏmrlər:\n/start — Xoş gəldiniz ekranını göstər\n/help — Bu izahı göstər\n/download <link> — Yükləməyə başla\n/feedback <mətn> — Rəy göndər\n/support — Bota dəstək ol\n/settings — Dili dəyiş"
 
+_TEXT["en"].update({
+    "transcribe": "📝 Transcribe speech",
+    "transcribe_usage": "Usage: /transcribe <https-video-url>",
+    "transcribe_url": "Please provide one valid HTTPS video URL to transcribe.",
+    "transcription_unavailable": "Speech-to-text is not available right now. Please try again later.",
+    "transcription_storage": "Speech-to-text requires cloud storage to be configured. Please try again later.",
+    "transcription_starting": "📝 Starting transcription…",
+    "transcription_processing": "🧠 Transcribing speech… This can take a few minutes for long videos.",
+    "transcription_ready": "📝 Transcript ready · detected language: {detected_language}",
+    "transcription_fallback": "The source could not be checked for download formats. You can still try speech-to-text:",
+})
+_TEXT["ru"].update({
+    "transcribe": "📝 Расшифровать речь",
+    "transcribe_usage": "Использование: /transcribe <https-ссылка-на-видео>",
+    "transcribe_url": "Укажите корректную HTTPS-ссылку на видео для расшифровки.",
+    "transcription_unavailable": "Преобразование речи в текст сейчас недоступно. Попробуйте позже.",
+    "transcription_storage": "Для расшифровки нужно настроить облачное хранилище. Попробуйте позже.",
+    "transcription_starting": "📝 Запускаю расшифровку…",
+    "transcription_processing": "🧠 Расшифровываю речь… Для длинных видео это может занять несколько минут.",
+    "transcription_ready": "📝 Расшифровка готова · определённый язык: {detected_language}",
+    "transcription_fallback": "Источник не удалось проверить для выбора формата. Можно попробовать расшифровку речи:",
+})
+_TEXT["az"].update({
+    "transcribe": "📝 Nitqi mətnə çevir",
+    "transcribe_usage": "İstifadə: /transcribe <https-video-linki>",
+    "transcribe_url": "Mətnə çevirmək üçün düzgün HTTPS video linki göndərin.",
+    "transcription_unavailable": "Nitqin mətnə çevrilməsi hazırda əlçatan deyil. Sonra yenidən cəhd edin.",
+    "transcription_storage": "Nitqi mətnə çevirmək üçün bulud yaddaşı konfiqurasiya edilməlidir. Sonra yenidən cəhd edin.",
+    "transcription_starting": "📝 Transkripsiya başlayır…",
+    "transcription_processing": "🧠 Nitq mətnə çevrilir… Uzun videolar üçün bu, bir neçə dəqiqə çəkə bilər.",
+    "transcription_ready": "📝 Transkripsiya hazırdır · müəyyən edilən dil: {detected_language}",
+    "transcription_fallback": "Format seçimi üçün mənbəni yoxlamaq mümkün olmadı. Nitqi mətnə çevirməyə cəhd edə bilərsiniz:",
+})
+_TEXT["en"]["transcription_help"] = "📝 Want text instead? Tap ‘Transcribe speech’ after sending a link, or use /transcribe <link>. The bot returns a timestamped .txt file."
+_TEXT["ru"]["transcription_help"] = "📝 Нужен текст? Нажмите «Расшифровать речь» после отправки ссылки или используйте /transcribe <ссылка>. Бот вернёт .txt-файл с таймкодами."
+_TEXT["az"]["transcription_help"] = "📝 Mətn lazımdır? Link göndərdikdən sonra «Nitqi mətnə çevir» düyməsinə basın və ya /transcribe <link> əmrindən istifadə edin. Bot vaxt göstəricili .txt faylı qaytaracaq."
+
 
 def normalize_language(language: str | None) -> str:
     return language if language in SUPPORTED_LANGUAGES else "en"
