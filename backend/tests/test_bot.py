@@ -11,13 +11,13 @@ from unittest.mock import AsyncMock, patch
 
 try:
     import backend.main as bot
-    from backend.bot.r2_cleanup import delete_expired_objects
-    from backend.bot.limits import SlidingWindowLimiter
+    from backend.bot.integrations.r2_cleanup import delete_expired_objects
+    from backend.bot.platforms.limits import SlidingWindowLimiter
 except ModuleNotFoundError:
     # Also support running discovery from inside the backend service directory.
     import main as bot
-    from bot.r2_cleanup import delete_expired_objects
-    from bot.limits import SlidingWindowLimiter
+    from bot.integrations.r2_cleanup import delete_expired_objects
+    from bot.platforms.limits import SlidingWindowLimiter
 
 
 class FakeMessage:
@@ -27,6 +27,7 @@ class FakeMessage:
         self.replies: list[tuple[str, object]] = []
         self.deleted = False
         self.edited: list[str] = []
+        self.documents = []
 
     async def reply_text(self, text: str, **kwargs):
         self.replies.append((text, kwargs.get("reply_markup")))
@@ -38,6 +39,9 @@ class FakeMessage:
 
     async def delete(self):
         self.deleted = True
+
+    async def reply_document(self, **kwargs):
+        self.documents.append(kwargs)
 
 
 class FakeBot:
@@ -361,13 +365,38 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("YouTube", message.replies[0][0])
         self.assertIn("/settings", message.replies[0][0])
 
+    async def test_transcribe_command_reports_unconfigured_service(self):
+        update, message = update_for()
+        with patch.object(bot, "transcription_is_configured", return_value=False):
+            await bot.transcribe_command(update, SimpleNamespace(args=["https://youtu.be/abc"]))
+        self.assertIn("not available", message.replies[0][0])
+
+    async def test_transcribe_callback_delivers_text_file(self):
+        update, message = update_for(chat_id=55, user_id=65)
+        key = bot.save_state(update, "https://youtu.be/abc", {"title": "Talk"})
+        query = FakeQuery(f"t|{key}", message)
+        update.callback_query = query
+        try:
+            from backend.bot.persistence import activity_store
+        except ModuleNotFoundError:
+            from bot.persistence import activity_store
+        with patch.object(bot, "transcription_is_configured", return_value=True), \
+             patch.object(bot, "r2_is_configured", return_value=True), \
+             patch.object(bot, "queue_is_configured", return_value=True), \
+             patch.object(bot, "enqueue_transcription") as enqueue, \
+             patch.object(activity_store, "create_transcription_job", return_value="a" * 32):
+            await bot.button_handler(update, SimpleNamespace())
+        self.assertIn("queued", query.edited[0].lower())
+        enqueue.assert_called_once_with("a" * 32)
+        self.assertNotIn(key, bot.STATES)
+
     async def test_feedback_command_saves_text_and_confirms(self):
         update, message = update_for()
         context = SimpleNamespace(args=["The", "720p", "option", "works", "well"])
         try:
-            from backend.bot import activity_store
+            from backend.bot.persistence import activity_store
         except ModuleNotFoundError:
-            from bot import activity_store
+            from bot.persistence import activity_store
         with patch.object(activity_store, "create_feedback", return_value="a" * 32) as create_feedback:
             await bot.feedback_command(update, context)
         create_feedback.assert_called_once()

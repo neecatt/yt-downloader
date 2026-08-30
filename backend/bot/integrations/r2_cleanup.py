@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -14,11 +15,12 @@ LOG = logging.getLogger("downloader_bot.r2_cleanup")
 def schedule_object_delete(client_factory: Callable[[], Any], bucket: str, key: str, *, delay_seconds: int) -> None:
     """Schedule exact expiry cleanup; the periodic sweep covers restarts."""
     def delete() -> None:
+        started = time.perf_counter()
         try:
             client_factory().delete_object(Bucket=bucket, Key=key)
-            LOG.info("R2 cleanup removed expired object")
+            LOG.info("event=r2_expiry_cleanup_finished duration_seconds=%.2f", time.perf_counter() - started)
         except Exception:
-            LOG.warning("Scheduled R2 object cleanup failed; periodic sweep will retry", exc_info=True)
+            LOG.warning("event=r2_expiry_cleanup_failed duration_seconds=%.2f; periodic sweep will retry", time.perf_counter() - started, exc_info=True)
 
     timer = threading.Timer(delay_seconds, delete)
     timer.daemon = True
@@ -66,6 +68,7 @@ async def cleanup_loop(
     """Sweep expired objects repeatedly; cancellation cleanly stops the loop."""
     loop = asyncio.get_running_loop()
     while True:
+        sweep_started = time.perf_counter()
         try:
             deleted = await loop.run_in_executor(
                 None,
@@ -77,9 +80,15 @@ async def cleanup_loop(
                 ),
             )
             if deleted:
-                LOG.info("R2 cleanup removed %s expired download object(s)", deleted)
+                LOG.info(
+                    "event=r2_cleanup_sweep_finished duration_seconds=%.2f deleted=%s",
+                    time.perf_counter() - sweep_started,
+                    deleted,
+                )
+            else:
+                LOG.debug("event=r2_cleanup_sweep_finished duration_seconds=%.2f deleted=0", time.perf_counter() - sweep_started)
         except asyncio.CancelledError:
             raise
         except Exception:
-            LOG.warning("R2 cleanup sweep failed; retrying later", exc_info=True)
+            LOG.warning("event=r2_cleanup_sweep_failed duration_seconds=%.2f; retrying later", time.perf_counter() - sweep_started, exc_info=True)
         await asyncio.sleep(interval_seconds)
