@@ -34,6 +34,7 @@ MAX_DURATION_SECONDS = int(os.getenv("TRANSCRIPTION_MAX_DURATION_SECONDS", "1440
 MAX_AUDIO_BYTES = int(os.getenv("TRANSCRIPTION_MAX_AUDIO_MB", "2048")) * 1024 * 1024
 GPU_TYPE = os.getenv("WHISPER_GPU", "T4") or "T4"
 MIN_CONTAINERS = max(0, int(os.getenv("MODAL_MIN_CONTAINERS", "0")))
+MAX_CONTAINERS = max(MIN_CONTAINERS, int(os.getenv("MODAL_MAX_CONTAINERS", "1")))
 SCALEDOWN_WINDOW_SECONDS = min(1200, max(60, int(os.getenv("MODAL_SCALEDOWN_WINDOW_SECONDS", "300"))))
 
 _MODEL = None
@@ -59,6 +60,7 @@ image = (
     gpu=GPU_TYPE,
     timeout=1800,
     min_containers=MIN_CONTAINERS,
+    max_containers=MAX_CONTAINERS,
     scaledown_window=SCALEDOWN_WINDOW_SECONDS,
     volumes={"/root/.cache/huggingface": model_volume},
 )

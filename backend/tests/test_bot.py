@@ -11,13 +11,13 @@ from unittest.mock import AsyncMock, patch
 
 try:
     import backend.main as bot
-    from backend.bot.r2_cleanup import delete_expired_objects
-    from backend.bot.limits import SlidingWindowLimiter
+    from backend.bot.integrations.r2_cleanup import delete_expired_objects
+    from backend.bot.platforms.limits import SlidingWindowLimiter
 except ModuleNotFoundError:
     # Also support running discovery from inside the backend service directory.
     import main as bot
-    from bot.r2_cleanup import delete_expired_objects
-    from bot.limits import SlidingWindowLimiter
+    from bot.integrations.r2_cleanup import delete_expired_objects
+    from bot.platforms.limits import SlidingWindowLimiter
 
 
 class FakeMessage:
@@ -376,29 +376,27 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         key = bot.save_state(update, "https://youtu.be/abc", {"title": "Talk"})
         query = FakeQuery(f"t|{key}", message)
         update.callback_query = query
-        result = {"title": "Talk", "language": "en", "text": "Hello world", "segments": [{"start": 0, "text": "Hello world"}]}
-        audio_path = Path(tempfile.mkdtemp()) / "audio.mp3"
-        audio_path.write_bytes(b"audio")
+        try:
+            from backend.bot.persistence import activity_store
+        except ModuleNotFoundError:
+            from bot.persistence import activity_store
         with patch.object(bot, "transcription_is_configured", return_value=True), \
              patch.object(bot, "r2_is_configured", return_value=True), \
-             patch.object(bot, "download_sync", return_value=({"title": "Talk", "duration": 60}, audio_path, "mp3")), \
-             patch.object(bot, "upload_to_r2_with_key", return_value=("https://r2.example/audio", "downloads/test.mp3")), \
-             patch.object(bot, "delete_r2_object") as delete_object, \
-             patch.object(bot, "transcribe_audio_url_sync", return_value=result):
+             patch.object(bot, "queue_is_configured", return_value=True), \
+             patch.object(bot, "enqueue_transcription") as enqueue, \
+             patch.object(activity_store, "create_transcription_job", return_value="a" * 32):
             await bot.button_handler(update, SimpleNamespace())
-        self.assertTrue(query.deleted)
-        self.assertEqual(len(message.documents), 1)
-        self.assertEqual(message.documents[0]["filename"], "Talk.txt")
-        delete_object.assert_called_once_with("downloads/test.mp3")
+        self.assertIn("queued", query.edited[0].lower())
+        enqueue.assert_called_once_with("a" * 32)
         self.assertNotIn(key, bot.STATES)
 
     async def test_feedback_command_saves_text_and_confirms(self):
         update, message = update_for()
         context = SimpleNamespace(args=["The", "720p", "option", "works", "well"])
         try:
-            from backend.bot import activity_store
+            from backend.bot.persistence import activity_store
         except ModuleNotFoundError:
-            from bot import activity_store
+            from bot.persistence import activity_store
         with patch.object(activity_store, "create_feedback", return_value="a" * 32) as create_feedback:
             await bot.feedback_command(update, context)
         create_feedback.assert_called_once()

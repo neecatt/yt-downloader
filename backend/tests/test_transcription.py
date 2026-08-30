@@ -3,14 +3,14 @@ import unittest
 from unittest.mock import patch
 
 try:
-    from backend.bot.transcription import (
+    from backend.bot.integrations.transcription import (
         format_transcript,
         transcript_filename,
         transcription_is_configured,
         validate_transcription_url,
     )
 except ModuleNotFoundError:
-    from bot.transcription import (
+    from bot.integrations.transcription import (
         format_transcript,
         transcript_filename,
         transcription_is_configured,
@@ -19,6 +19,14 @@ except ModuleNotFoundError:
 
 
 class TranscriptionTests(unittest.TestCase):
+    def test_queue_requires_private_redis_url(self):
+        try:
+            from backend.bot.queue import queue_is_configured
+        except ModuleNotFoundError:
+            from bot.queue import queue_is_configured
+        with patch.dict(os.environ, {"TRANSCRIPTION_QUEUE_ENABLED": "true"}, clear=True):
+            self.assertFalse(queue_is_configured())
+
     def test_only_supported_https_hosts_are_accepted(self):
         self.assertEqual(validate_transcription_url("https://youtu.be/example"), "https://youtu.be/example")
         with self.assertRaises(ValueError):

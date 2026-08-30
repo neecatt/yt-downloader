@@ -15,8 +15,17 @@ Facebook, X, and LinkedIn, with Telegram and cloud-storage delivery options.
 
 ## Project structure
 
-- `main.py` — application entry point and Telegram handlers.
-- `bot/` — storage, security, media, cookies, limits, and admin API modules.
+- `main.py` — stable application entry point.
+- `bot/config/` — typed environment-backed settings grouped by concern.
+- `bot/runtime/` — Telegram callback state and delivery models.
+- `bot/queue/` — Celery broker configuration and application queue client.
+- `bot/platforms/` — platform media formatting, URL security, and rate limits.
+- `bot/services/` — yt-dlp and object-storage application services.
+- `bot/telegram/` — reusable Telegram presentation and keyboard helpers.
+- `bot/persistence/` — PostgreSQL activity, conversation, feedback, and job storage.
+- `bot/integrations/` — R2 cleanup, Modal transcription, and cookie integrations.
+- `bot/api/` — protected admin API.
+- `bot/transcription_tasks.py` — Celery transcription worker task.
 - `tests/` — backend test suite.
 - `Dockerfile` — container deployment configuration.
 
@@ -41,3 +50,35 @@ python -m unittest discover -s tests -v
 The application requires a Telegram bot token and the services selected for
 your deployment, such as PostgreSQL or cloud storage. Keep those values in
 your hosting provider's secret configuration rather than in the repository.
+
+## Speech-to-text queue and Modal worker
+
+Speech-to-text jobs use a dedicated Celery worker and private Redis broker.
+PostgreSQL stores the durable job record used by the admin panel. Create a
+second Railway service from this repository and set its start command to:
+
+```sh
+celery -A bot.transcription_tasks worker --loglevel=INFO --concurrency=1 -Q transcription
+```
+
+The bot and worker services must share the same Redis, database, Telegram, R2,
+and Modal variables. Only an opaque job ID is sent through Redis; media bytes
+and signed URLs are not placed in the queue.
+
+Deploy the Modal GPU function separately:
+
+```sh
+modal deploy backend/modal_transcriber.py
+```
+
+Required queue variables:
+
+- `REDIS_URL` — private Redis connection URL provided by Railway.
+- `TRANSCRIPTION_QUEUE_ENABLED=true`.
+
+Queue protection variables include `TRANSCRIPTION_QUEUE_MAX_SIZE` (default
+100), `TRANSCRIPTION_QUEUE_MAX_PER_USER` (default 3),
+`TRANSCRIPTION_MAX_RETRIES` (default 2), and
+`CELERY_VISIBILITY_TIMEOUT_SECONDS` (default six hours). Keep the Celery
+worker at `--concurrency=1` and Modal at one GPU container while controlling
+costs is the priority.
