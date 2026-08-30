@@ -11,8 +11,8 @@ from fastapi.responses import JSONResponse
 from telegram import Bot
 from telegram.error import TelegramError
 
-from . import activity_store
-from .limits import SlidingWindowLimiter
+from ..persistence import activity_store
+from ..platforms.limits import SlidingWindowLimiter
 
 
 ADMIN_REQUESTS_PER_MINUTE = min(300, max(10, int(os.getenv("ADMIN_REQUESTS_PER_MINUTE", "60"))))

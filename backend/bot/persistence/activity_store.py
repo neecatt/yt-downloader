@@ -73,6 +73,23 @@ def initialize() -> None:
             connection.execute("ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS admin_read_at TIMESTAMPTZ")
             connection.execute("ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS language_code TEXT")
             connection.execute("""
+            CREATE TABLE IF NOT EXISTS transcription_jobs (
+                id TEXT PRIMARY KEY,
+                activity_id TEXT,
+                telegram_chat_id BIGINT NOT NULL,
+                telegram_user_id BIGINT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('queued', 'processing', 'completed', 'failed', 'cancelled')),
+                source_url TEXT NOT NULL,
+                language_code TEXT NOT NULL,
+                status_message_id BIGINT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                created_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL
+            )
+            """)
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_transcription_jobs_status_created ON transcription_jobs(status, created_at)")
+            connection.execute("""
             CREATE TABLE IF NOT EXISTS bot_messages (
                 id TEXT PRIMARY KEY,
                 telegram_chat_id BIGINT NOT NULL,
@@ -118,6 +135,101 @@ def create_event(*, username: str | None, display_name: str | None, chat_type: s
     except Exception:
         LOG.warning("Could not record activity event", exc_info=True)
         return None
+
+
+def create_transcription_job(
+    *,
+    activity_id: str | None,
+    chat_id: int,
+    user_id: int,
+    source_url: str,
+    language: str,
+    status_message_id: int | None,
+) -> str | None:
+    """Persist a queue payload; Celery receives only this opaque ID."""
+    if not enabled():
+        return None
+    job_id = uuid.uuid4().hex
+    now = datetime.now(timezone.utc)
+    try:
+        with _lock, _connect() as connection:
+            active_statuses = ("queued", "processing")
+            global_limit = max(1, int(os.getenv("TRANSCRIPTION_QUEUE_MAX_SIZE", "100")))
+            user_limit = max(1, int(os.getenv("TRANSCRIPTION_QUEUE_MAX_PER_USER", "3")))
+            total = connection.execute(
+                "SELECT COUNT(*) FROM transcription_jobs WHERE status IN (%s, %s)", active_statuses
+            ).fetchone()[0]
+            user_total = connection.execute(
+                "SELECT COUNT(*) FROM transcription_jobs WHERE telegram_user_id = %s AND status IN (%s, %s)",
+                (user_id, *active_statuses),
+            ).fetchone()[0]
+            if total >= global_limit or user_total >= user_limit:
+                LOG.info("event=transcription_queue_rejected global=%s user=%s", total >= global_limit, user_total >= user_limit)
+                return None
+            connection.execute(
+                "INSERT INTO transcription_jobs (id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, created_at, updated_at) VALUES (%s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s)",
+                (job_id, activity_id, chat_id, user_id, source_url, language, status_message_id, now, now),
+            )
+        return job_id
+    except Exception:
+        LOG.warning("Could not create transcription job", exc_info=True)
+        return None
+
+
+def recover_stale_transcription_jobs(*, stale_after_seconds: int = 21600) -> int:
+    """Return interrupted worker jobs to the queue after a process restart."""
+    if not enabled():
+        return 0
+    cutoff = datetime.now(timezone.utc).timestamp() - stale_after_seconds
+    try:
+        with _lock, _connect() as connection:
+            cursor = connection.execute(
+                "UPDATE transcription_jobs SET status = 'queued', updated_at = %s, error = 'Recovered after worker interruption' WHERE status = 'processing' AND EXTRACT(EPOCH FROM updated_at) < %s",
+                (datetime.now(timezone.utc), cutoff),
+            )
+            return cursor.rowcount
+    except Exception:
+        LOG.warning("Could not recover stale transcription jobs", exc_info=True)
+        return 0
+
+
+def get_transcription_job(job_id: str) -> dict[str, Any] | None:
+    if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", job_id):
+        return None
+    try:
+        with _lock, _connect() as connection:
+            row = connection.execute(
+                "SELECT id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, attempts, error, created_at, updated_at FROM transcription_jobs WHERE id = %s",
+                (job_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "activity_id": row[1], "chat_id": int(row[2]), "user_id": int(row[3]),
+            "status": row[4], "source_url": row[5], "language": row[6], "status_message_id": row[7],
+            "attempts": int(row[8]), "error": row[9], "created_at": row[10], "updated_at": row[11],
+        }
+    except Exception:
+        LOG.warning("Could not read transcription job", exc_info=True)
+        return None
+
+
+def update_transcription_job(job_id: str, *, status: str, error: str | None = None, increment_attempts: bool = False) -> None:
+    if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", job_id) or status not in {"queued", "processing", "completed", "failed", "cancelled"}:
+        return
+    fields = ["status = %s", "updated_at = %s"]
+    values: list[Any] = [status, datetime.now(timezone.utc)]
+    if error is not None:
+        fields.append("error = %s")
+        values.append(error[:1000])
+    if increment_attempts:
+        fields.append("attempts = attempts + 1")
+    values.append(job_id)
+    try:
+        with _lock, _connect() as connection:
+            connection.execute(f"UPDATE transcription_jobs SET {', '.join(fields)} WHERE id = %s", values)
+    except Exception:
+        LOG.warning("Could not update transcription job", exc_info=True)
 
 
 def record_contact(*, chat_id: int, username: str | None, display_name: str | None, chat_type: str | None) -> None:

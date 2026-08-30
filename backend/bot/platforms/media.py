@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 try:
-    from .i18n import tr
+    from ..i18n import tr
 except ImportError:
     from bot.i18n import tr
 
