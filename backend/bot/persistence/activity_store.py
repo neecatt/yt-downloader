@@ -84,10 +84,14 @@ def initialize() -> None:
                 status_message_id BIGINT,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 error TEXT,
+                processing_started_at TIMESTAMPTZ,
+                processing_duration_seconds DOUBLE PRECISION,
                 created_at TIMESTAMPTZ NOT NULL,
                 updated_at TIMESTAMPTZ NOT NULL
             )
             """)
+            connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ")
+            connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS processing_duration_seconds DOUBLE PRECISION")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_transcription_jobs_status_created ON transcription_jobs(status, created_at)")
             connection.execute("""
             CREATE TABLE IF NOT EXISTS bot_messages (
@@ -199,7 +203,7 @@ def get_transcription_job(job_id: str) -> dict[str, Any] | None:
     try:
         with _lock, _connect() as connection:
             row = connection.execute(
-                "SELECT id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, attempts, error, created_at, updated_at FROM transcription_jobs WHERE id = %s",
+                "SELECT id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, attempts, error, created_at, updated_at, processing_started_at, processing_duration_seconds FROM transcription_jobs WHERE id = %s",
                 (job_id,),
             ).fetchone()
         if not row:
@@ -208,13 +212,71 @@ def get_transcription_job(job_id: str) -> dict[str, Any] | None:
             "id": row[0], "activity_id": row[1], "chat_id": int(row[2]), "user_id": int(row[3]),
             "status": row[4], "source_url": row[5], "language": row[6], "status_message_id": row[7],
             "attempts": int(row[8]), "error": row[9], "created_at": row[10], "updated_at": row[11],
+            "processing_started_at": row[12], "processing_duration_seconds": row[13],
         }
     except Exception:
         LOG.warning("Could not read transcription job", exc_info=True)
         return None
 
 
-def update_transcription_job(job_id: str, *, status: str, error: str | None = None, increment_attempts: bool = False) -> None:
+def get_transcription_queue_status(job_id: str) -> dict[str, Any] | None:
+    """Return a live queue position and wait estimate for a transcription job."""
+    if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", job_id):
+        return None
+    try:
+        with _lock, _connect() as connection:
+            job = connection.execute("SELECT status, created_at FROM transcription_jobs WHERE id = %s", (job_id,)).fetchone()
+            if not job:
+                return None
+            status, created_at = job
+            average_seconds = connection.execute(
+                "SELECT AVG(processing_duration_seconds) FROM transcription_jobs WHERE status = 'completed' AND processing_duration_seconds IS NOT NULL"
+            ).fetchone()[0]
+            try:
+                default_seconds = max(60, int(os.getenv("TRANSCRIPTION_ESTIMATED_SECONDS", "300")))
+            except ValueError:
+                default_seconds = 300
+            average_seconds = max(60, int(round(average_seconds or default_seconds)))
+            if status != "queued":
+                return {"status": status, "position": 1 if status == "processing" else None, "eta_minutes": 0}
+            queued_ahead = connection.execute(
+                "SELECT COUNT(*) FROM transcription_jobs WHERE status = 'queued' AND (created_at < %s OR (created_at = %s AND id < %s))",
+                (created_at, created_at, job_id),
+            ).fetchone()[0]
+            processing = connection.execute("SELECT COUNT(*) FROM transcription_jobs WHERE status = 'processing'").fetchone()[0]
+            wait_seconds = (int(queued_ahead) + int(processing)) * average_seconds
+            return {
+                "status": status,
+                "position": int(queued_ahead) + int(processing) + 1,
+                "eta_minutes": max(1, (wait_seconds + 59) // 60) if wait_seconds else 0,
+            }
+    except Exception:
+        LOG.warning("Could not calculate transcription queue status", exc_info=True)
+        return None
+
+
+def get_active_transcription_jobs() -> list[dict[str, Any]]:
+    """Return the Telegram fields needed to refresh active queue messages."""
+    if not enabled():
+        return []
+    try:
+        with _lock, _connect() as connection:
+            rows = connection.execute(
+                "SELECT id, status, telegram_chat_id, status_message_id, language_code FROM transcription_jobs WHERE status IN ('queued', 'processing') ORDER BY created_at, id"
+            ).fetchall()
+        return [
+            {"id": row[0], "status": row[1], "chat_id": int(row[2]), "status_message_id": row[3], "language": row[4]}
+            for row in rows
+        ]
+    except Exception:
+        LOG.warning("Could not read active transcription jobs", exc_info=True)
+        return []
+
+
+def update_transcription_job(
+    job_id: str, *, status: str, error: str | None = None,
+    increment_attempts: bool = False, processing_duration_seconds: float | None = None,
+) -> None:
     if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", job_id) or status not in {"queued", "processing", "completed", "failed", "cancelled"}:
         return
     fields = ["status = %s", "updated_at = %s"]
@@ -224,6 +286,12 @@ def update_transcription_job(job_id: str, *, status: str, error: str | None = No
         values.append(error[:1000])
     if increment_attempts:
         fields.append("attempts = attempts + 1")
+    if status == "processing":
+        fields.append("processing_started_at = %s")
+        values.append(datetime.now(timezone.utc))
+    if processing_duration_seconds is not None:
+        fields.append("processing_duration_seconds = %s")
+        values.append(max(0.0, float(processing_duration_seconds)))
     values.append(job_id)
     try:
         with _lock, _connect() as connection:

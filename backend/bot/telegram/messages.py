@@ -11,9 +11,9 @@ from .commands import _app
 async def run_transcription(update: Any, status: Any, url: str, language: str, *, activity_id: str | None = None) -> None:
     app = _app()
 
-    async def edit(text: str) -> None:
+    async def edit(text: str, **kwargs: Any) -> None:
         method = getattr(status, "edit_message_text", None) or getattr(status, "edit_text")
-        await method(text)
+        await method(text, **kwargs)
 
     if not app.queue_is_configured():
         await edit(app.tr(language, "transcription_queue_unavailable"))
@@ -28,11 +28,20 @@ async def run_transcription(update: Any, status: Any, url: str, language: str, *
         )
         if not job_id:
             raise RuntimeError("Could not create transcription job")
+        queue_status = activity_store.get_transcription_queue_status(job_id)
         app.enqueue_transcription(job_id)
-        await edit(app.tr(language, "transcription_queued"))
+        if queue_status and queue_status.get("position"):
+            await edit(app.tr(
+                language, "transcription_queued_with_position",
+                position=queue_status["position"], eta_minutes=queue_status["eta_minutes"],
+            ))
+        else:
+            await edit(app.tr(language, "transcription_queued"))
         app.LOG.info("event=transcription_enqueued job_id=%s chat_id=%s", job_id, update.effective_chat.id)
     except Exception as exc:
         app.LOG.warning("event=transcription_enqueue_failed error=%s", app.safe_log_error(exc), exc_info=True)
+        if "job_id" in locals() and job_id:
+            activity_store.update_transcription_job(job_id, status="failed", error=str(exc))
         app._update_activity(activity_id, status="failed", action="transcribe", error=app.display_error(exc, language))
         await edit(app.tr(language, "transcription_queue_unavailable"))
 

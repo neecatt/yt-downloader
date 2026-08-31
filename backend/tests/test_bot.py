@@ -384,9 +384,11 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
              patch.object(bot, "r2_is_configured", return_value=True), \
              patch.object(bot, "queue_is_configured", return_value=True), \
              patch.object(bot, "enqueue_transcription") as enqueue, \
-             patch.object(activity_store, "create_transcription_job", return_value="a" * 32):
+             patch.object(activity_store, "create_transcription_job", return_value="a" * 32), \
+             patch.object(activity_store, "get_transcription_queue_status", return_value={"position": 3, "eta_minutes": 10}):
             await bot.button_handler(update, SimpleNamespace())
-        self.assertIn("queued", query.edited[0].lower())
+        self.assertIn("position 3", query.edited[0].lower())
+        self.assertIn("10 min", query.edited[0].lower())
         enqueue.assert_called_once_with("a" * 32)
         self.assertNotIn(key, bot.STATES)
 
