@@ -107,7 +107,7 @@ async def make_choice(update: Update, url: str, info: dict[str, Any] | None = No
         [app.InlineKeyboardButton(app.tr(language, "best"), callback_data=f"d|best|{key}")],
         [app.InlineKeyboardButton(app.tr(language, "mp3_128"), callback_data=f"d|mp3_128|{key}"), app.InlineKeyboardButton(app.tr(language, "mp3_192"), callback_data=f"d|mp3_192|{key}")],
         [app.InlineKeyboardButton(app.tr(language, "mp3_320"), callback_data=f"d|mp3_320|{key}")],
-        [app.InlineKeyboardButton(app.tr(language, "transcribe"), callback_data=f"t|{key}")],
+        [app.InlineKeyboardButton(app.tr(language, "transcribe"), callback_data=f"t|{key}"), app.InlineKeyboardButton(app.tr(language, "summarize"), callback_data=f"s|{key}")],
     ]
     await update.effective_message.reply_text(app.tr(language, "choose_format", title=title, duration=duration_line), reply_markup=app.InlineKeyboardMarkup(keyboard))
 
@@ -141,16 +141,16 @@ async def download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await status.edit_text(app.display_error(exc, language))
 
 
-async def transcribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _run_transcription_command(update: Update, context: ContextTypes.DEFAULT_TYPE, job_type: str) -> None:
     app = _app()
     app._record_contact(update)
     language = app.language_for_update(update)
     if not context.args:
-        await update.effective_message.reply_text(app.tr(language, "transcribe_usage"))
+        await update.effective_message.reply_text(app.tr(language, "summarize_usage" if job_type == "summary" else "transcribe_usage"))
         return
     url = app.extract_url(context.args[0], any_https=app.ALLOW_GENERIC_HTTPS)
     if not url:
-        await update.effective_message.reply_text(app.tr(language, "transcribe_url"))
+        await update.effective_message.reply_text(app.tr(language, "summarize_url" if job_type == "summary" else "transcribe_url"))
         return
     if not app.transcription_is_configured():
         await update.effective_message.reply_text(app.tr(language, "transcription_unavailable"))
@@ -165,6 +165,15 @@ async def transcribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not app.allow_analysis(user_id):
         await update.effective_message.reply_text(app.tr(language, "analysis_limit"))
         return
-    status = await update.effective_message.reply_text(app.tr(language, "transcription_starting"))
-    activity_id = app._create_activity_event(update, url, None, action="transcribe")
-    await app._run_transcription(update, status, url, language, activity_id=activity_id)
+    status_key = "summarization_starting" if job_type == "summary" else "transcription_starting"
+    status = await update.effective_message.reply_text(app.tr(language, status_key))
+    activity_id = app._create_activity_event(update, url, None, action=job_type)
+    await app._run_transcription(update, status, url, language, activity_id=activity_id, job_type=job_type)
+
+
+async def transcribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _run_transcription_command(update, context, "transcript")
+
+
+async def summarize(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _run_transcription_command(update, context, "summary")

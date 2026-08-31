@@ -504,6 +504,7 @@ feedback_command = commands.feedback
 help_command = commands.help_command
 download_command = commands.download
 transcribe_command = commands.transcribe
+summarize_command = commands.summarize
 make_choice = commands.make_choice
 send_file = delivery.send_file
 send_r2_link = delivery.send_r2_link
@@ -637,7 +638,8 @@ def main() -> None:
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("download", download_command))
     application.add_handler(CommandHandler("transcribe", transcribe_command))
-    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(?:d|p|t|lang)\|"))
+    application.add_handler(CommandHandler("summarize", summarize_command))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(?:d|p|t|s|lang)\|"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     LOG.info("event=telegram_polling_start")
     application.run_polling(allowed_updates=Update.ALL_TYPES)

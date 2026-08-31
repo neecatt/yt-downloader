@@ -451,6 +451,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         markup = message.replies[0][1]
         callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
         self.assertIn("d|720p", " ".join(callbacks))
+        self.assertIn("s|", " ".join(callbacks))
         self.assertEqual(len(bot.STATES), 1)
 
     async def test_message_handler_rejects_unsupported_input(self):

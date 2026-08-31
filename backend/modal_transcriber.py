@@ -29,6 +29,9 @@ def _log_level() -> int:
 
 APP_NAME = os.getenv("MODAL_APP_NAME", "yt-downloader-transcriber")
 MODEL_NAME = os.getenv("WHISPER_MODEL", "small")
+SUMMARY_MODEL_NAME = os.getenv("SUMMARY_MODEL", "Qwen/Qwen2.5-3B-Instruct")
+SUMMARY_MAX_CHARS = max(4000, int(os.getenv("SUMMARY_MAX_CHARS", "12000")))
+SUMMARY_MAX_OUTPUT_TOKENS = max(256, int(os.getenv("SUMMARY_MAX_OUTPUT_TOKENS", "900")))
 MODEL_VOLUME_NAME = os.getenv("WHISPER_MODEL_VOLUME", "yt-downloader-whisper-models")
 MAX_DURATION_SECONDS = int(os.getenv("TRANSCRIPTION_MAX_DURATION_SECONDS", "14400"))
 MAX_AUDIO_BYTES = int(os.getenv("TRANSCRIPTION_MAX_AUDIO_MB", "2048")) * 1024 * 1024
@@ -38,6 +41,8 @@ MAX_CONTAINERS = max(MIN_CONTAINERS, int(os.getenv("MODAL_MAX_CONTAINERS", "1"))
 SCALEDOWN_WINDOW_SECONDS = min(1200, max(60, int(os.getenv("MODAL_SCALEDOWN_WINDOW_SECONDS", "300"))))
 
 _MODEL = None
+_SUMMARY_TOKENIZER = None
+_SUMMARY_MODEL = None
 
 app = modal.App(APP_NAME)
 model_volume = modal.Volume.from_name(MODEL_VOLUME_NAME, create_if_missing=True)
@@ -51,7 +56,7 @@ image = (
     )
     .entrypoint([])
     .apt_install("ffmpeg")
-    .pip_install("faster-whisper")
+    .pip_install("faster-whisper", "torch", "transformers")
 )
 
 
@@ -64,7 +69,42 @@ image = (
     scaledown_window=SCALEDOWN_WINDOW_SECONDS,
     volumes={"/root/.cache/huggingface": model_volume},
 )
-def transcribe(source_url: str, title: str = "Transcript", source_kind: str = "r2", duration: float | None = None) -> dict[str, object]:
+def _summarize_text(text: str, language: str) -> str:
+    global _SUMMARY_MODEL, _SUMMARY_TOKENIZER
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    if _SUMMARY_MODEL is None:
+        _SUMMARY_TOKENIZER = AutoTokenizer.from_pretrained(SUMMARY_MODEL_NAME)
+        _SUMMARY_MODEL = AutoModelForCausalLM.from_pretrained(
+            SUMMARY_MODEL_NAME, torch_dtype=torch.float16, device_map="auto"
+        )
+        LOG.info("event=summary_model_loaded model=%s", SUMMARY_MODEL_NAME)
+    messages = [
+        {"role": "system", "content": "You produce accurate, concise summaries of spoken transcripts."},
+        {"role": "user", "content": (
+            "Summarize only the transcript below. Do not invent facts. "
+            f"Write in {language}. Include an overview and key points; include action items only if explicitly present.\n\n"
+            f"TRANSCRIPT:\n{text}"
+        )},
+    ]
+    inputs = _SUMMARY_TOKENIZER.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True)
+    inputs = inputs.to(_SUMMARY_MODEL.device)
+    with torch.inference_mode():
+        output = _SUMMARY_MODEL.generate(inputs, max_new_tokens=SUMMARY_MAX_OUTPUT_TOKENS, do_sample=False)
+    return _SUMMARY_TOKENIZER.decode(output[0][inputs.shape[-1]:], skip_special_tokens=True).strip()
+
+
+def _summarize_transcript(text: str, language: str) -> str:
+    chunks = [text[index:index + SUMMARY_MAX_CHARS] for index in range(0, len(text), SUMMARY_MAX_CHARS)]
+    summaries = [_summarize_text(chunk, language) for chunk in chunks]
+    return summaries[0] if len(summaries) == 1 else _summarize_text("\n\n".join(summaries), language)
+
+
+def transcribe(
+    source_url: str, title: str = "Transcript", source_kind: str = "r2",
+    duration: float | None = None, summarize: bool = False, summary_language: str = "en",
+) -> dict[str, object]:
     """Download temporary audio and return timestamped speech-to-text."""
     from urllib.request import Request, urlopen
     # The official CUDA runtime image supplies cuBLAS/cuDNN system libraries.
@@ -130,11 +170,13 @@ def transcribe(source_url: str, title: str = "Transcript", source_kind: str = "r
             if text:
                 text_parts.append(text)
                 collected.append({"start": float(segment.start), "text": text})
+        summary = _summarize_transcript(" ".join(text_parts), summary_language) if summarize else ""
         LOG.info(
-            "event=inference_finished duration_seconds=%.2f total_duration_seconds=%.2f segments=%s",
+            "event=inference_finished duration_seconds=%.2f total_duration_seconds=%.2f segments=%s summarize=%s",
             time.perf_counter() - inference_started,
             time.perf_counter() - job_started,
             len(collected),
+            summarize,
         )
         LOG.info("event=transcription_job_finished total_duration_seconds=%.2f", time.perf_counter() - job_started)
         return {
@@ -143,4 +185,5 @@ def transcribe(source_url: str, title: str = "Transcript", source_kind: str = "r
             "duration": None,
             "text": " ".join(text_parts),
             "segments": collected,
+            "summary": summary,
         }

@@ -82,6 +82,7 @@ def initialize() -> None:
                 source_url TEXT NOT NULL,
                 language_code TEXT NOT NULL,
                 status_message_id BIGINT,
+                job_type TEXT NOT NULL DEFAULT 'transcript' CHECK (job_type IN ('transcript', 'summary')),
                 attempts INTEGER NOT NULL DEFAULT 0,
                 error TEXT,
                 processing_started_at TIMESTAMPTZ,
@@ -92,6 +93,7 @@ def initialize() -> None:
             """)
             connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ")
             connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS processing_duration_seconds DOUBLE PRECISION")
+            connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS job_type TEXT NOT NULL DEFAULT 'transcript'")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_transcription_jobs_status_created ON transcription_jobs(status, created_at)")
             connection.execute("""
             CREATE TABLE IF NOT EXISTS bot_messages (
@@ -149,9 +151,10 @@ def create_transcription_job(
     source_url: str,
     language: str,
     status_message_id: int | None,
+    job_type: str = "transcript",
 ) -> str | None:
     """Persist a queue payload; Celery receives only this opaque ID."""
-    if not enabled():
+    if not enabled() or job_type not in {"transcript", "summary"}:
         return None
     job_id = uuid.uuid4().hex
     now = datetime.now(timezone.utc)
@@ -171,8 +174,8 @@ def create_transcription_job(
                 LOG.info("event=transcription_queue_rejected global=%s user=%s", total >= global_limit, user_total >= user_limit)
                 return None
             connection.execute(
-                "INSERT INTO transcription_jobs (id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, created_at, updated_at) VALUES (%s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s)",
-                (job_id, activity_id, chat_id, user_id, source_url, language, status_message_id, now, now),
+                "INSERT INTO transcription_jobs (id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, job_type, created_at, updated_at) VALUES (%s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s, %s)",
+                (job_id, activity_id, chat_id, user_id, source_url, language, status_message_id, job_type, now, now),
             )
         return job_id
     except Exception:
@@ -203,16 +206,16 @@ def get_transcription_job(job_id: str) -> dict[str, Any] | None:
     try:
         with _lock, _connect() as connection:
             row = connection.execute(
-                "SELECT id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, attempts, error, created_at, updated_at, processing_started_at, processing_duration_seconds FROM transcription_jobs WHERE id = %s",
+                "SELECT id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, job_type, attempts, error, created_at, updated_at, processing_started_at, processing_duration_seconds FROM transcription_jobs WHERE id = %s",
                 (job_id,),
             ).fetchone()
         if not row:
             return None
         return {
             "id": row[0], "activity_id": row[1], "chat_id": int(row[2]), "user_id": int(row[3]),
-            "status": row[4], "source_url": row[5], "language": row[6], "status_message_id": row[7],
-            "attempts": int(row[8]), "error": row[9], "created_at": row[10], "updated_at": row[11],
-            "processing_started_at": row[12], "processing_duration_seconds": row[13],
+            "status": row[4], "source_url": row[5], "language": row[6], "status_message_id": row[7], "job_type": row[8],
+            "attempts": int(row[9]), "error": row[10], "created_at": row[11], "updated_at": row[12],
+            "processing_started_at": row[13], "processing_duration_seconds": row[14],
         }
     except Exception:
         LOG.warning("Could not read transcription job", exc_info=True)
