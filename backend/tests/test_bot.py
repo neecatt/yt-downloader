@@ -392,6 +392,28 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         enqueue.assert_called_once_with("a" * 32)
         self.assertNotIn(key, bot.STATES)
 
+    async def test_transcription_status_edit_failure_does_not_report_queue_failure(self):
+        update, message = update_for(chat_id=55, user_id=65)
+        key = bot.save_state(update, "https://youtu.be/abc")
+
+        class FailingStatus(FakeQuery):
+            async def edit_message_text(self, text: str, **kwargs):
+                raise RuntimeError("Telegram edit raced with worker update")
+
+        status = FailingStatus(f"t|{key}", message)
+        try:
+            from backend.bot.persistence import activity_store
+        except ModuleNotFoundError:
+            from bot.persistence import activity_store
+        with patch.object(bot, "queue_is_configured", return_value=True), \
+             patch.object(bot, "enqueue_transcription") as enqueue, \
+             patch.object(bot, "_update_activity") as update_activity, \
+             patch.object(activity_store, "create_transcription_job", return_value="a" * 32), \
+             patch.object(activity_store, "get_transcription_queue_status", return_value={"position": 2, "eta_minutes": 5}):
+            await bot._run_transcription(update, status, "https://youtu.be/abc", "en")
+        enqueue.assert_called_once_with("a" * 32)
+        update_activity.assert_not_called()
+
     async def test_feedback_command_saves_text_and_confirms(self):
         update, message = update_for()
         context = SimpleNamespace(args=["The", "720p", "option", "works", "well"])
