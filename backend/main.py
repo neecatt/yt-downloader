@@ -554,6 +554,7 @@ async def post_init(application: Application) -> None:
         BotCommand("help", "Show usage instructions"),
         BotCommand("download", "Download a video from a link"),
         BotCommand("transcribe", "Transcribe speech from a video link"),
+        BotCommand("summarize", "Summarize a video and send its transcript"),
         BotCommand("feedback", "Send feedback"),
         BotCommand("support", "Support the bot"),
         BotCommand("settings", "Change language"),
