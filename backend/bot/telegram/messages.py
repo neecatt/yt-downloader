@@ -18,9 +18,10 @@ async def run_transcription(update: Any, status: Any, url: str, language: str, *
     if not app.queue_is_configured():
         await edit(app.tr(language, "transcription_queue_unavailable"))
         return
+    from ..persistence import activity_store
+    user = update.effective_user
+    job_id: str | None = None
     try:
-        from ..persistence import activity_store
-        user = update.effective_user
         job_id = activity_store.create_transcription_job(
             activity_id=activity_id, chat_id=update.effective_chat.id,
             user_id=user.id if user else 0, source_url=url, language=language,
@@ -28,8 +29,19 @@ async def run_transcription(update: Any, status: Any, url: str, language: str, *
         )
         if not job_id:
             raise RuntimeError("Could not create transcription job")
-        queue_status = activity_store.get_transcription_queue_status(job_id)
         app.enqueue_transcription(job_id)
+    except Exception as exc:
+        app.LOG.warning("event=transcription_enqueue_failed error=%s", app.safe_log_error(exc), exc_info=True)
+        if job_id:
+            activity_store.update_transcription_job(job_id, status="failed", error=str(exc))
+        app._update_activity(activity_id, status="failed", action="transcribe", error=app.display_error(exc, language))
+        await edit(app.tr(language, "transcription_queue_unavailable"))
+        return
+
+    # Telegram edits are deliberately outside the enqueue failure boundary:
+    # Celery may start the job and update this message concurrently.
+    try:
+        queue_status = activity_store.get_transcription_queue_status(job_id)
         if queue_status and queue_status.get("position"):
             await edit(app.tr(
                 language, "transcription_queued_with_position",
@@ -38,12 +50,8 @@ async def run_transcription(update: Any, status: Any, url: str, language: str, *
         else:
             await edit(app.tr(language, "transcription_queued"))
         app.LOG.info("event=transcription_enqueued job_id=%s chat_id=%s", job_id, update.effective_chat.id)
-    except Exception as exc:
-        app.LOG.warning("event=transcription_enqueue_failed error=%s", app.safe_log_error(exc), exc_info=True)
-        if "job_id" in locals() and job_id:
-            activity_store.update_transcription_job(job_id, status="failed", error=str(exc))
-        app._update_activity(activity_id, status="failed", action="transcribe", error=app.display_error(exc, language))
-        await edit(app.tr(language, "transcription_queue_unavailable"))
+    except Exception:
+        app.LOG.warning("event=transcription_queue_status_update_failed job_id=%s", job_id, exc_info=True)
 
 
 async def handle(update: Any, context: Any) -> None:
