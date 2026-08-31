@@ -21,5 +21,5 @@ def enqueue_transcription(job_id: str) -> Any:
     """Send only the opaque database ID to Celery; media stays out of Redis."""
     if not queue_is_configured():
         raise RuntimeError("The transcription queue is not configured")
-    from ..transcription_tasks import process_transcription
+    from ..workers.transcription import process_transcription
     return process_transcription.delay(job_id)

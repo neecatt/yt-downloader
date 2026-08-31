@@ -13,11 +13,15 @@ from typing import Any
 
 from telegram import Bot
 
-from .queue.config import app
-from .persistence import activity_store
-from .i18n import tr
-from .platforms.media import display_error
-from .integrations.transcription import format_transcript, transcript_filename, transcribe_audio_url_sync
+from ..queue.config import app
+from ..persistence import activity_store
+from ..i18n import tr
+from ..platforms.media import display_error
+from ..integrations.transcription import format_transcript, transcript_filename, transcribe_audio_url_sync
+from ..integrations.cookies import prepare_cookie_file
+from ..integrations.r2_cleanup import schedule_object_delete
+from ..services.downloader import DownloaderConfig, download
+from ..services import storage
 
 
 LOG = logging.getLogger("downloader_bot.transcription_worker")
@@ -25,6 +29,61 @@ MAX_RETRIES = max(0, int(os.getenv("TRANSCRIPTION_MAX_RETRIES", "2")))
 _WORKER_INITIALIZED = False
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def _worker_downloader_config() -> DownloaderConfig:
+    return DownloaderConfig(
+        max_bytes=_int("MAX_DOWNLOAD_MB", 2048) * 1024 * 1024,
+        fragment_workers=max(1, _int("FRAGMENT_WORKERS", 4)),
+        http_chunk_size_mb=max(1, _int("HTTP_CHUNK_SIZE_MB", 10)),
+        cookies_file=prepare_cookie_file(os.getenv("YTDLP_COOKIES_B64"), os.getenv("YTDLP_COOKIES_FILE")),
+        proxy=os.getenv("YTDLP_PROXY") or None,
+        js_runtime=os.getenv("YTDLP_JS_RUNTIME") or None,
+        player_client=os.getenv("YTDLP_PLAYER_CLIENT") or None,
+        po_token=os.getenv("YTDLP_PO_TOKEN") or None,
+        po_provider_url=os.getenv("YTDLP_POT_PROVIDER_URL") or None,
+    )
+
+
+def _storage_config() -> tuple[str | None, str | None, str | None, str | None, int, int]:
+    endpoint = os.getenv("R2_ENDPOINT_URL") or None
+    access = os.getenv("R2_ACCESS_KEY_ID") or None
+    secret = os.getenv("R2_SECRET_ACCESS_KEY") or None
+    api_token = os.getenv("R2_API_TOKEN") or ""
+    if api_token and ":" in api_token:
+        access, secret = api_token.split(":", 1)
+    return endpoint, access, secret, os.getenv("R2_BUCKET_NAME") or None, _int("R2_PRESIGNED_URL_TTL_SECONDS", 86400), max(1, _int("R2_UPLOAD_CONCURRENCY", 8))
+
+
+def _r2_client():
+    endpoint, access, secret, bucket, _, _ = _storage_config()
+    return storage.client(endpoint, access, secret, bucket)
+
+
+def _download_sync(url: str, fmt: str, directory: str):
+    return download(_worker_downloader_config(), url, fmt, directory)
+
+
+def _upload_to_r2(filename: Path, info: dict[str, Any], extension: str) -> tuple[str, str]:
+    endpoint, access, secret, bucket, ttl, concurrency = _storage_config()
+    return storage.upload(
+        filename, info, extension, client_factory=_r2_client, bucket=bucket or "",
+        public_base_url=None, url_ttl=ttl, retention_seconds=ttl,
+        schedule_delete=schedule_object_delete, upload_concurrency=concurrency,
+    )
+
+
+def _delete_r2_object(object_key: str) -> None:
+    endpoint, access, secret, bucket, _, _ = _storage_config()
+    if object_key and storage.configured(endpoint, access, secret, bucket):
+        storage.delete(object_key, client_factory=_r2_client, bucket=bucket or "")
 
 
 def initialize_worker_state() -> None:
@@ -103,18 +162,13 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
     object_key: str | None = None
     activity_store.update_transcription_job(job_id, status="processing", increment_attempts=True)
     try:
-        try:
-            from main import download_sync, upload_to_r2_with_key, delete_r2_object
-        except ImportError:
-            from ..main import download_sync, upload_to_r2_with_key, delete_r2_object
-
         language = job["language"]
         activity_store.update_event(job.get("activity_id"), status="started", action="transcribe")
         LOG.info("event=transcription_job_started job_id=%s", job_id)
         asyncio.run(_edit_status(job, tr(language, "downloading", fmt="mp3")))
-        info, audio_file, _ = download_sync(job["source_url"], "mp3", str(directory))
+        info, audio_file, _ = _download_sync(job["source_url"], "mp3", str(directory))
         activity_store.update_event(job.get("activity_id"), status="started", title=info.get("title"), duration_ms=int(float(info.get("duration") or 0) * 1000) if info.get("duration") else None)
-        audio_url, object_key = upload_to_r2_with_key(audio_file, info, "mp3")
+        audio_url, object_key = _upload_to_r2(audio_file, info, "mp3")
         asyncio.run(_edit_status(job, tr(language, "transcription_processing")))
         result = transcribe_audio_url_sync(audio_url, str(info.get("title") or "Transcript"), info.get("duration"))
         transcript = format_transcript(result)
@@ -139,8 +193,7 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
     finally:
         if object_key:
             try:
-                from main import delete_r2_object
-                delete_r2_object(object_key)
+                _delete_r2_object(object_key)
             except Exception:
                 LOG.warning("event=transcription_cleanup_failed job_id=%s", job_id, exc_info=True)
         shutil.rmtree(directory, ignore_errors=True)
