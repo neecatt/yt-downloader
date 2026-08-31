@@ -60,15 +60,6 @@ image = (
 )
 
 
-@app.function(
-    image=image,
-    gpu=GPU_TYPE,
-    timeout=1800,
-    min_containers=MIN_CONTAINERS,
-    max_containers=MAX_CONTAINERS,
-    scaledown_window=SCALEDOWN_WINDOW_SECONDS,
-    volumes={"/root/.cache/huggingface": model_volume},
-)
 def _summarize_text(text: str, language: str) -> str:
     global _SUMMARY_MODEL, _SUMMARY_TOKENIZER
     import torch
@@ -101,6 +92,15 @@ def _summarize_transcript(text: str, language: str) -> str:
     return summaries[0] if len(summaries) == 1 else _summarize_text("\n\n".join(summaries), language)
 
 
+@app.function(
+    image=image,
+    gpu=GPU_TYPE,
+    timeout=1800,
+    min_containers=MIN_CONTAINERS,
+    max_containers=MAX_CONTAINERS,
+    scaledown_window=SCALEDOWN_WINDOW_SECONDS,
+    volumes={"/root/.cache/huggingface": model_volume},
+)
 def transcribe(
     source_url: str, title: str = "Transcript", source_kind: str = "r2",
     duration: float | None = None, summarize: bool = False, summary_language: str = "en",
