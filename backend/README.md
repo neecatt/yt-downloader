@@ -78,7 +78,14 @@ Required queue variables:
 
 Queue protection variables include `TRANSCRIPTION_QUEUE_MAX_SIZE` (default
 100), `TRANSCRIPTION_QUEUE_MAX_PER_USER` (default 3),
+`TRANSCRIPTION_ESTIMATED_SECONDS` (default 300),
 `TRANSCRIPTION_MAX_RETRIES` (default 2), and
 `CELERY_VISIBILITY_TIMEOUT_SECONDS` (default six hours). Keep the Celery
 worker at `--concurrency=1` and Modal at one GPU container while controlling
 costs is the priority.
+
+The bot calculates queue position from PostgreSQL and estimates wait time from
+completed transcription durations. The bot and worker must use the same
+`DATABASE_URL`. If the worker logs `event=transcription_job_missing`, verify
+that both Railway services point to the same PostgreSQL database, not only the
+same Redis instance.

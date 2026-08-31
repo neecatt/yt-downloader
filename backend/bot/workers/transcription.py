@@ -118,6 +118,20 @@ async def _edit_status(job: dict[str, Any], text: str) -> None:
         LOG.warning("event=transcription_status_update_failed job_id=%s", job["id"], exc_info=True)
 
 
+async def _refresh_queue_statuses() -> None:
+    """Push current position and ETA to every active transcription message."""
+    for job in activity_store.get_active_transcription_jobs():
+        if job["status"] == "processing":
+            await _edit_status(job, tr(job["language"], "transcription_processing"))
+            continue
+        status = activity_store.get_transcription_queue_status(job["id"])
+        if status and status.get("position"):
+            await _edit_status(
+                job,
+                tr(job["language"], "transcription_queued_with_position", position=status["position"], eta_minutes=status["eta_minutes"]),
+            )
+
+
 async def _deliver(job: dict[str, Any], transcript: str, title: str, language: str) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
@@ -153,6 +167,8 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
     job = activity_store.get_transcription_job(job_id)
     if not job:
         LOG.error("event=transcription_job_missing job_id=%s", job_id)
+        if self.request.retries < MAX_RETRIES:
+            raise self.retry(exc=RuntimeError("Transcription job is not visible to the worker"), countdown=30)
         return {"status": "missing", "job_id": job_id}
     if job["status"] in {"completed", "cancelled"}:
         return {"status": job["status"], "job_id": job_id}
@@ -161,6 +177,7 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
     directory = Path(tempfile.mkdtemp(prefix="transcription-"))
     object_key: str | None = None
     activity_store.update_transcription_job(job_id, status="processing", increment_attempts=True)
+    asyncio.run(_refresh_queue_statuses())
     try:
         language = job["language"]
         activity_store.update_event(job.get("activity_id"), status="started", action="transcribe")
@@ -173,16 +190,21 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
         result = transcribe_audio_url_sync(audio_url, str(info.get("title") or "Transcript"), info.get("duration"))
         transcript = format_transcript(result)
         asyncio.run(_deliver(job, transcript, str(result.get("title") or "Transcript"), language))
-        activity_store.update_transcription_job(job_id, status="completed")
+        activity_store.update_transcription_job(
+            job_id, status="completed", processing_duration_seconds=time.perf_counter() - started,
+        )
+        asyncio.run(_refresh_queue_statuses())
         activity_store.update_event(job.get("activity_id"), status="completed", action="transcribe", title=result.get("title"), duration_ms=int(float(result.get("duration") or 0) * 1000) if result.get("duration") else None)
         LOG.info("event=transcription_job_finished job_id=%s total_duration_seconds=%.2f", job_id, time.perf_counter() - started)
         return {"status": "completed", "job_id": job_id}
     except Exception as exc:
         if _retryable(exc) and self.request.retries < MAX_RETRIES:
             activity_store.update_transcription_job(job_id, status="queued", error=str(exc))
+            asyncio.run(_refresh_queue_statuses())
             LOG.warning("event=transcription_job_retry job_id=%s retry=%s error=%s", job_id, self.request.retries + 1, display_error(exc))
             raise self.retry(exc=exc, countdown=min(300, 2 ** self.request.retries * 10))
         activity_store.update_transcription_job(job_id, status="failed", error=str(exc))
+        asyncio.run(_refresh_queue_statuses())
         activity_store.update_event(job.get("activity_id"), status="failed", action="transcribe", error=display_error(exc, job["language"]))
         try:
             asyncio.run(_edit_status(job, display_error(exc, job["language"])))
