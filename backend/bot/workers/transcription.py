@@ -160,6 +160,32 @@ async def _deliver(job: dict[str, Any], transcript: str, title: str, language: s
         shutil.rmtree(directory, ignore_errors=True)
 
 
+async def _deliver_summary(job: dict[str, Any], summary: str, transcript: str, title: str, language: str) -> None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("Telegram bot token is not configured")
+    filename = transcript_filename(title)
+    directory = Path(tempfile.mkdtemp(prefix="transcript-artifact-"))
+    artifact = directory / filename
+    artifact.write_text(transcript, encoding="utf-8")
+    try:
+        async with Bot(token=token) as bot:
+            if job.get("status_message_id"):
+                try:
+                    await bot.delete_message(chat_id=job["chat_id"], message_id=job["status_message_id"])
+                except Exception:
+                    LOG.debug("event=transcription_status_delete_skipped job_id=%s", job["id"], exc_info=True)
+            await bot.send_message(chat_id=job["chat_id"], text=summary[:4096])
+            with artifact.open("rb") as document:
+                await bot.send_document(
+                    chat_id=job["chat_id"], document=document, filename=filename,
+                    caption=tr(language, "transcription_ready", detected_language=language),
+                    read_timeout=120, write_timeout=120,
+                )
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 @app.task(bind=True, name="transcription.process", max_retries=MAX_RETRIES, track_started=True)
 def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
     """Process one durable job and acknowledge it only after completion."""
@@ -180,21 +206,31 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
     asyncio.run(_refresh_queue_statuses())
     try:
         language = job["language"]
-        activity_store.update_event(job.get("activity_id"), status="started", action="transcribe")
+        is_summary = job.get("job_type") == "summary"
+        activity_store.update_event(job.get("activity_id"), status="started", action="summarize" if is_summary else "transcribe")
         LOG.info("event=transcription_job_started job_id=%s", job_id)
         asyncio.run(_edit_status(job, tr(language, "downloading", fmt="mp3")))
         info, audio_file, _ = _download_sync(job["source_url"], "mp3", str(directory))
         activity_store.update_event(job.get("activity_id"), status="started", title=info.get("title"), duration_ms=int(float(info.get("duration") or 0) * 1000) if info.get("duration") else None)
         audio_url, object_key = _upload_to_r2(audio_file, info, "mp3")
-        asyncio.run(_edit_status(job, tr(language, "transcription_processing")))
-        result = transcribe_audio_url_sync(audio_url, str(info.get("title") or "Transcript"), info.get("duration"))
+        asyncio.run(_edit_status(job, tr(language, "summarization_processing" if is_summary else "transcription_processing")))
+        result = transcribe_audio_url_sync(
+            audio_url, str(info.get("title") or "Transcript"), info.get("duration"),
+            summarize=is_summary, summary_language=language,
+        )
         transcript = format_transcript(result)
-        asyncio.run(_deliver(job, transcript, str(result.get("title") or "Transcript"), language))
+        if is_summary:
+            summary = result.get("summary")
+            if not summary:
+                raise RuntimeError("The summarization service returned an empty summary")
+            asyncio.run(_deliver_summary(job, summary, transcript, str(result.get("title") or "Transcript"), language))
+        else:
+            asyncio.run(_deliver(job, transcript, str(result.get("title") or "Transcript"), language))
         activity_store.update_transcription_job(
             job_id, status="completed", processing_duration_seconds=time.perf_counter() - started,
         )
         asyncio.run(_refresh_queue_statuses())
-        activity_store.update_event(job.get("activity_id"), status="completed", action="transcribe", title=result.get("title"), duration_ms=int(float(result.get("duration") or 0) * 1000) if result.get("duration") else None)
+        activity_store.update_event(job.get("activity_id"), status="completed", action="summarize" if is_summary else "transcribe", title=result.get("title"), duration_ms=int(float(result.get("duration") or 0) * 1000) if result.get("duration") else None)
         LOG.info("event=transcription_job_finished job_id=%s total_duration_seconds=%.2f", job_id, time.perf_counter() - started)
         return {"status": "completed", "job_id": job_id}
     except Exception as exc:
@@ -205,7 +241,7 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
             raise self.retry(exc=exc, countdown=min(300, 2 ** self.request.retries * 10))
         activity_store.update_transcription_job(job_id, status="failed", error=str(exc))
         asyncio.run(_refresh_queue_statuses())
-        activity_store.update_event(job.get("activity_id"), status="failed", action="transcribe", error=display_error(exc, job["language"]))
+        activity_store.update_event(job.get("activity_id"), status="failed", action="summarize" if job.get("job_type") == "summary" else "transcribe", error=display_error(exc, job["language"]))
         try:
             asyncio.run(_edit_status(job, display_error(exc, job["language"])))
         except Exception:

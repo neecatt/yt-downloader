@@ -62,14 +62,14 @@ def _function_handle() -> Any:
     )
 
 
-def transcribe_audio_url_sync(audio_url: str, title: str = "Transcript", duration: float | None = None) -> dict[str, Any]:
+def transcribe_audio_url_sync(audio_url: str, title: str = "Transcript", duration: float | None = None, *, summarize: bool = False, summary_language: str = "en") -> dict[str, Any]:
     """Send a temporary private R2 audio URL to Modal for inference."""
     parsed = urlparse(audio_url)
     if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
         raise ValueError("The temporary transcription URL is invalid")
     if not transcription_is_configured():
         raise RuntimeError("Transcription is not configured")
-    result = _function_handle().remote(audio_url, title[:300], "r2", duration)
+    result = _function_handle().remote(audio_url, title[:300], "r2", duration, summarize, summary_language)
     if not isinstance(result, dict):
         raise RuntimeError("The transcription service returned an invalid response")
     text = str(result.get("text") or "").strip()
@@ -83,6 +83,7 @@ def transcribe_audio_url_sync(audio_url: str, title: str = "Transcript", duratio
         "duration": result.get("duration"),
         "text": text,
         "segments": result.get("segments") or [],
+        "summary": str(result.get("summary") or "").strip(),
     }
 
 
