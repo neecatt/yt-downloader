@@ -107,7 +107,7 @@ async def make_choice(update: Update, url: str, info: dict[str, Any] | None = No
         [app.InlineKeyboardButton(app.tr(language, "best"), callback_data=f"d|best|{key}")],
         [app.InlineKeyboardButton(app.tr(language, "mp3_128"), callback_data=f"d|mp3_128|{key}"), app.InlineKeyboardButton(app.tr(language, "mp3_192"), callback_data=f"d|mp3_192|{key}")],
         [app.InlineKeyboardButton(app.tr(language, "mp3_320"), callback_data=f"d|mp3_320|{key}")],
-        [app.InlineKeyboardButton(app.tr(language, "transcribe"), callback_data=f"t|{key}")],
+        [app.InlineKeyboardButton(app.tr(language, "transcribe"), callback_data=f"t|{key}"), app.InlineKeyboardButton(app.tr(language, "summarize"), callback_data=f"s|{key}")],
     ]
     await update.effective_message.reply_text(app.tr(language, "choose_format", title=title, duration=duration_line), reply_markup=app.InlineKeyboardMarkup(keyboard))
 

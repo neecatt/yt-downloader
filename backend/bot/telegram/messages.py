@@ -8,7 +8,7 @@ import asyncio
 from .commands import _app
 
 
-async def run_transcription(update: Any, status: Any, url: str, language: str, *, activity_id: str | None = None) -> None:
+async def run_transcription(update: Any, status: Any, url: str, language: str, *, activity_id: str | None = None, job_type: str = "transcript") -> None:
     app = _app()
 
     async def edit(text: str, **kwargs: Any) -> None:
@@ -26,6 +26,7 @@ async def run_transcription(update: Any, status: Any, url: str, language: str, *
             activity_id=activity_id, chat_id=update.effective_chat.id,
             user_id=user.id if user else 0, source_url=url, language=language,
             status_message_id=getattr(status, "message_id", None),
+            job_type=job_type,
         )
         if not job_id:
             raise RuntimeError("Could not create transcription job")

@@ -93,6 +93,7 @@ _TEXT["az"]["help"] = "🎬 Botdan necə istifadə etməli\n\n1. YouTube, TikTok
 
 _TEXT["en"].update({
     "transcribe": "📝 Transcribe speech",
+    "summarize": "📌 Summarize video",
     "transcribe_usage": "Usage: /transcribe <https-video-url>",
     "transcribe_url": "Please provide one valid HTTPS video URL to transcribe.",
     "transcription_unavailable": "Speech-to-text is not available right now. Please try again later.",
@@ -102,11 +103,13 @@ _TEXT["en"].update({
     "transcription_queued_with_position": "🕒 Your transcription is queued at position {position}. Estimated wait: about {eta_minutes} min.",
     "transcription_starting": "📝 Starting transcription…",
     "transcription_processing": "🧠 Transcribing speech… This can take a few minutes for long videos.",
+    "summarization_processing": "🧠 Generating the summary from the transcript…",
     "transcription_ready": "📝 Transcript ready · detected language: {detected_language}",
     "transcription_fallback": "The source could not be checked for download formats. You can still try speech-to-text:",
 })
 _TEXT["ru"].update({
     "transcribe": "📝 Расшифровать речь",
+    "summarize": "📌 Кратко пересказать видео",
     "transcribe_usage": "Использование: /transcribe <https-ссылка-на-видео>",
     "transcribe_url": "Укажите корректную HTTPS-ссылку на видео для расшифровки.",
     "transcription_unavailable": "Преобразование речи в текст сейчас недоступно. Попробуйте позже.",
@@ -116,11 +119,13 @@ _TEXT["ru"].update({
     "transcription_queued_with_position": "🕒 Ваша расшифровка в очереди на позиции {position}. Ожидаемое время: около {eta_minutes} мин.",
     "transcription_starting": "📝 Запускаю расшифровку…",
     "transcription_processing": "🧠 Расшифровываю речь… Для длинных видео это может занять несколько минут.",
+    "summarization_processing": "🧠 Готовлю краткое содержание по расшифровке…",
     "transcription_ready": "📝 Расшифровка готова · определённый язык: {detected_language}",
     "transcription_fallback": "Источник не удалось проверить для выбора формата. Можно попробовать расшифровку речи:",
 })
 _TEXT["az"].update({
     "transcribe": "📝 Nitqi mətnə çevir",
+    "summarize": "📌 Videonu xülasə et",
     "transcribe_usage": "İstifadə: /transcribe <https-video-linki>",
     "transcribe_url": "Mətnə çevirmək üçün düzgün HTTPS video linki göndərin.",
     "transcription_unavailable": "Nitqin mətnə çevrilməsi hazırda əlçatan deyil. Sonra yenidən cəhd edin.",
@@ -130,6 +135,7 @@ _TEXT["az"].update({
     "transcription_queued_with_position": "🕒 Transkripsiyanız növbədə {position}-ci yerdədir. Təxmini gözləmə: {eta_minutes} dəqiqə.",
     "transcription_starting": "📝 Transkripsiya başlayır…",
     "transcription_processing": "🧠 Nitq mətnə çevrilir… Uzun videolar üçün bu, bir neçə dəqiqə çəkə bilər.",
+    "summarization_processing": "🧠 Xülasə transkripsiya əsasında hazırlanır…",
     "transcription_ready": "📝 Transkripsiya hazırdır · müəyyən edilən dil: {detected_language}",
     "transcription_fallback": "Format seçimi üçün mənbəni yoxlamaq mümkün olmadı. Nitqi mətnə çevirməyə cəhd edə bilərsiniz:",
 })

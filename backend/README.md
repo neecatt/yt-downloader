@@ -89,3 +89,9 @@ completed transcription durations. The bot and worker must use the same
 `DATABASE_URL`. If the worker logs `event=transcription_job_missing`, verify
 that both Railway services point to the same PostgreSQL database, not only the
 same Redis instance.
+
+The format chooser also provides a separate summarize action. Summary jobs
+use the same queue, generate the transcript and summary in Modal, then send the
+summary followed by the complete timestamped transcript file. Configure the
+Modal summary model with `SUMMARY_MODEL`; the default is a small instruct model
+selected for lower latency.

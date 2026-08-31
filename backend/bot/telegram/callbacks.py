@@ -67,7 +67,8 @@ async def handle(update: Any, context: Any) -> None:
     if data.startswith("lang|"):
         await app.language_button_handler(update, context, data.split("|", 1)[1])
         return
-    if data.startswith("t|"):
+    if data.startswith(("t|", "s|")):
+        job_type = "summary" if data.startswith("s|") else "transcript"
         key = data.split("|", 1)[1]
         language = app.language_for_update(update)
         state = app.get_state(key, update)
@@ -86,8 +87,8 @@ async def handle(update: Any, context: Any) -> None:
         if not app.allow_analysis(state.user_id):
             await query.edit_message_text(app.tr(language, "analysis_limit"))
             return
-        app._update_activity(state.activity_id, status="started", action="transcribe")
-        await app._run_transcription(update, query, state.url, language, activity_id=state.activity_id)
+        app._update_activity(state.activity_id, status="started", action=job_type)
+        await app._run_transcription(update, query, state.url, language, activity_id=state.activity_id, job_type=job_type)
         app.STATES.pop(key, None)
         return
     try:
