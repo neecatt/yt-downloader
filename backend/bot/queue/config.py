@@ -25,6 +25,9 @@ app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     task_reject_on_worker_lost=True,
+    broker_connection_retry_on_startup=True,
+    task_publish_retry=True,
+    task_publish_retry_policy={"max_retries": 5, "interval_start": 1, "interval_step": 2, "interval_max": 10},
     worker_prefetch_multiplier=1,
     broker_transport_options={
         "visibility_timeout": max(3600, int(os.getenv("CELERY_VISIBILITY_TIMEOUT_SECONDS", "21600"))),

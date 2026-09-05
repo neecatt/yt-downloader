@@ -66,11 +66,15 @@ def _summarize_text(text: str, language: str) -> str:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     if _SUMMARY_MODEL is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.float16 if device == "cuda" else torch.float32
+        LOG.info("event=summary_model_loading model=%s device=%s dtype=%s", SUMMARY_MODEL_NAME, device, dtype)
         _SUMMARY_TOKENIZER = AutoTokenizer.from_pretrained(SUMMARY_MODEL_NAME)
         _SUMMARY_MODEL = AutoModelForCausalLM.from_pretrained(
-            SUMMARY_MODEL_NAME, torch_dtype=torch.float16, device_map="auto"
-        )
-        LOG.info("event=summary_model_loaded model=%s", SUMMARY_MODEL_NAME)
+            SUMMARY_MODEL_NAME, torch_dtype=dtype
+        ).to(device)
+        _SUMMARY_MODEL.eval()
+        LOG.info("event=summary_model_loaded model=%s device=%s", SUMMARY_MODEL_NAME, device)
     messages = [
         {"role": "system", "content": "You produce accurate, concise summaries of spoken transcripts."},
         {"role": "user", "content": (
@@ -80,7 +84,7 @@ def _summarize_text(text: str, language: str) -> str:
         )},
     ]
     inputs = _SUMMARY_TOKENIZER.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True)
-    inputs = inputs.to(_SUMMARY_MODEL.device)
+    inputs = inputs.to(next(_SUMMARY_MODEL.parameters()).device)
     with torch.inference_mode():
         output = _SUMMARY_MODEL.generate(inputs, max_new_tokens=SUMMARY_MAX_OUTPUT_TOKENS, do_sample=False)
     return _SUMMARY_TOKENIZER.decode(output[0][inputs.shape[-1]:], skip_special_tokens=True).strip()

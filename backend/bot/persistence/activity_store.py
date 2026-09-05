@@ -85,6 +85,7 @@ def initialize() -> None:
                 job_type TEXT NOT NULL DEFAULT 'transcript' CHECK (job_type IN ('transcript', 'summary')),
                 attempts INTEGER NOT NULL DEFAULT 0,
                 error TEXT,
+                next_attempt_at TIMESTAMPTZ,
                 processing_started_at TIMESTAMPTZ,
                 processing_duration_seconds DOUBLE PRECISION,
                 created_at TIMESTAMPTZ NOT NULL,
@@ -93,6 +94,7 @@ def initialize() -> None:
             """)
             connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ")
             connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS processing_duration_seconds DOUBLE PRECISION")
+            connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ")
             connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS job_type TEXT NOT NULL DEFAULT 'transcript'")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_transcription_jobs_status_created ON transcription_jobs(status, created_at)")
             connection.execute("""
@@ -200,13 +202,49 @@ def recover_stale_transcription_jobs(*, stale_after_seconds: int = 21600) -> int
         return 0
 
 
+def get_requeueable_transcription_job_ids(*, limit: int = 100, min_age_seconds: int = 30) -> list[str]:
+    """Find durable queued jobs whose broker task may have been lost."""
+    if not enabled():
+        return []
+    limit = min(500, max(1, limit))
+    cutoff = datetime.now(timezone.utc).timestamp() - max(0, min_age_seconds)
+    try:
+        with _lock, _connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM transcription_jobs WHERE status = 'queued' AND (next_attempt_at IS NULL OR next_attempt_at <= %s) AND EXTRACT(EPOCH FROM updated_at) <= %s ORDER BY created_at, id LIMIT %s",
+                (datetime.now(timezone.utc), cutoff, limit),
+            ).fetchall()
+        return [row[0] for row in rows]
+    except Exception:
+        LOG.warning("Could not read requeueable transcription jobs", exc_info=True)
+        return []
+
+
+def claim_transcription_job(job_id: str, *, stale_after_seconds: int = 21600) -> bool | None:
+    """Atomically claim a queued job; ``None`` means the database was unavailable."""
+    if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", job_id):
+        return False
+    stale_cutoff = datetime.now(timezone.utc).timestamp() - max(60, stale_after_seconds)
+    now = datetime.now(timezone.utc)
+    try:
+        with _lock, _connect() as connection:
+            cursor = connection.execute(
+                "UPDATE transcription_jobs SET status = 'processing', attempts = attempts + 1, processing_started_at = %s, next_attempt_at = NULL, updated_at = %s WHERE id = %s AND (status = 'queued' OR (status = 'processing' AND EXTRACT(EPOCH FROM updated_at) < %s))",
+                (now, now, job_id, stale_cutoff),
+            )
+        return cursor.rowcount == 1
+    except Exception:
+        LOG.warning("Could not claim transcription job", exc_info=True)
+        return None
+
+
 def get_transcription_job(job_id: str) -> dict[str, Any] | None:
     if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", job_id):
         return None
     try:
         with _lock, _connect() as connection:
             row = connection.execute(
-                "SELECT id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, job_type, attempts, error, created_at, updated_at, processing_started_at, processing_duration_seconds FROM transcription_jobs WHERE id = %s",
+                "SELECT id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, job_type, attempts, error, created_at, updated_at, next_attempt_at, processing_started_at, processing_duration_seconds FROM transcription_jobs WHERE id = %s",
                 (job_id,),
             ).fetchone()
         if not row:
@@ -215,7 +253,7 @@ def get_transcription_job(job_id: str) -> dict[str, Any] | None:
             "id": row[0], "activity_id": row[1], "chat_id": int(row[2]), "user_id": int(row[3]),
             "status": row[4], "source_url": row[5], "language": row[6], "status_message_id": row[7], "job_type": row[8],
             "attempts": int(row[9]), "error": row[10], "created_at": row[11], "updated_at": row[12],
-            "processing_started_at": row[13], "processing_duration_seconds": row[14],
+            "next_attempt_at": row[13], "processing_started_at": row[14], "processing_duration_seconds": row[15],
         }
     except Exception:
         LOG.warning("Could not read transcription job", exc_info=True)
@@ -279,6 +317,7 @@ def get_active_transcription_jobs() -> list[dict[str, Any]]:
 def update_transcription_job(
     job_id: str, *, status: str, error: str | None = None,
     increment_attempts: bool = False, processing_duration_seconds: float | None = None,
+    next_attempt_at: datetime | None = None,
 ) -> None:
     if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", job_id) or status not in {"queued", "processing", "completed", "failed", "cancelled"}:
         return
@@ -292,6 +331,10 @@ def update_transcription_job(
     if status == "processing":
         fields.append("processing_started_at = %s")
         values.append(datetime.now(timezone.utc))
+        fields.append("next_attempt_at = NULL")
+    elif next_attempt_at is not None:
+        fields.append("next_attempt_at = %s")
+        values.append(next_attempt_at)
     if processing_duration_seconds is not None:
         fields.append("processing_duration_seconds = %s")
         values.append(max(0.0, float(processing_duration_seconds)))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from .commands import _app
 
@@ -34,9 +35,19 @@ async def run_transcription(update: Any, status: Any, url: str, language: str, *
     except Exception as exc:
         app.LOG.warning("event=transcription_enqueue_failed error=%s", app.safe_log_error(exc), exc_info=True)
         if job_id:
-            activity_store.update_transcription_job(job_id, status="failed", error=str(exc))
-        app._update_activity(activity_id, status="failed", action="transcribe", error=app.display_error(exc, language))
-        await edit(app.tr(language, "transcription_queue_unavailable"))
+            # The database row is the source of truth. A temporary Redis/Celery
+            # publish failure must leave it queued for the recovery loop.
+            activity_store.update_transcription_job(
+                job_id,
+                status="queued",
+                error=str(exc),
+                next_attempt_at=datetime.now(timezone.utc) + timedelta(seconds=60),
+            )
+            app._update_activity(activity_id, status="started", action=job_type)
+            await edit(app.tr(language, "transcription_saved_for_retry"))
+        else:
+            app._update_activity(activity_id, status="failed", action=job_type, error=app.display_error(exc, language))
+            await edit(app.tr(language, "transcription_queue_unavailable"))
         return
 
     # Telegram edits are deliberately outside the enqueue failure boundary:

@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import time
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 try:
@@ -537,6 +538,7 @@ def download_sync(url: str, fmt: str, tmpdir: str, progress_callback: ProgressCa
 
 R2_CLEANUP_TASK: asyncio.Task[Any] | None = None
 PENDING_DELIVERY_CLEANUP_TASK: asyncio.Task[Any] | None = None
+TRANSCRIPTION_RECOVERY_TASK: asyncio.Task[Any] | None = None
 
 
 async def pending_delivery_cleanup_loop() -> None:
@@ -546,8 +548,48 @@ async def pending_delivery_cleanup_loop() -> None:
         await asyncio.sleep(interval)
 
 
+async def transcription_recovery_loop() -> None:
+    """Re-submit durable jobs whose Celery message was lost or exhausted retries."""
+    try:
+        interval = max(30, min(300, int(os.getenv("TRANSCRIPTION_RECOVERY_INTERVAL_SECONDS", "60"))))
+    except ValueError:
+        interval = 60
+    try:
+        stale_after = max(3600, int(os.getenv("TRANSCRIPTION_STALE_JOB_SECONDS", "21600")))
+    except ValueError:
+        stale_after = 21600
+
+    while True:
+        try:
+            try:
+                from .bot.persistence import activity_store
+            except ImportError:
+                from bot.persistence import activity_store
+            activity_store.recover_stale_transcription_jobs(stale_after_seconds=stale_after)
+            if queue_is_configured():
+                for job_id in activity_store.get_requeueable_transcription_job_ids(
+                    limit=100, min_age_seconds=30
+                ):
+                    try:
+                        enqueue_transcription(job_id)
+                        # Prevent duplicate publishing while a broker message is
+                        # in flight. The worker's atomic claim remains the final
+                        # duplicate-delivery safeguard.
+                        activity_store.update_transcription_job(
+                            job_id,
+                            status="queued",
+                            next_attempt_at=datetime.now(timezone.utc) + timedelta(seconds=interval * 2),
+                        )
+                        LOG.info("event=transcription_job_requeued job_id=%s", job_id)
+                    except Exception:
+                        LOG.warning("event=transcription_requeue_failed job_id=%s", job_id, exc_info=True)
+        except Exception:
+            LOG.warning("event=transcription_recovery_cycle_failed", exc_info=True)
+        await asyncio.sleep(interval)
+
+
 async def post_init(application: Application) -> None:
-    global R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK
+    global R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK, TRANSCRIPTION_RECOVERY_TASK
     LOG.info("Bot started with %s download worker(s)", MAX_WORKERS)
     await application.bot.set_my_commands([
         BotCommand("start", "Show the welcome screen"),
@@ -562,6 +604,10 @@ async def post_init(application: Application) -> None:
     PENDING_DELIVERY_CLEANUP_TASK = asyncio.create_task(
         pending_delivery_cleanup_loop(), name="pending-delivery-cleanup"
     )
+    if queue_is_configured():
+        TRANSCRIPTION_RECOVERY_TASK = asyncio.create_task(
+            transcription_recovery_loop(), name="transcription-recovery"
+        )
     if r2_is_configured():
         R2_CLEANUP_TASK = asyncio.create_task(
             cleanup_loop(
@@ -581,14 +627,15 @@ async def post_init(application: Application) -> None:
 
 
 async def post_shutdown(application: Application) -> None:
-    global R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK
-    tasks = [task for task in (R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK) if task]
+    global R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK, TRANSCRIPTION_RECOVERY_TASK
+    tasks = [task for task in (R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK, TRANSCRIPTION_RECOVERY_TASK) if task]
     for task in tasks:
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
     R2_CLEANUP_TASK = None
     PENDING_DELIVERY_CLEANUP_TASK = None
+    TRANSCRIPTION_RECOVERY_TASK = None
     for pending in list(PENDING_DELIVERIES.values()):
         discard_pending_delivery(pending)
     PENDING_DELIVERIES.clear()
