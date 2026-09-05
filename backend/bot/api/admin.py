@@ -46,6 +46,23 @@ def _message_from_payload(payload: dict[str, Any]) -> str:
     return message
 
 
+def _excluded_usernames(value: str | None) -> list[str]:
+    if not value:
+        return []
+    usernames = []
+    for candidate in value.split(","):
+        normalized = candidate.strip().lstrip("@").lower()
+        if not normalized:
+            continue
+        if not re.fullmatch(r"[a-z0-9_]{5,32}", normalized):
+            raise HTTPException(status_code=400, detail="Invalid excluded username")
+        if normalized not in usernames:
+            usernames.append(normalized)
+    if len(usernames) > 50:
+        raise HTTPException(status_code=400, detail="At most 50 usernames can be excluded")
+    return usernames
+
+
 def _username_from_payload(payload: dict[str, Any]) -> str:
     username = payload.get("username")
     if not isinstance(username, str):
@@ -106,12 +123,20 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/admin/activity")
-    async def activity(request: Request, authorization: str | None = Header(default=None), q: str | None = Query(default=None), platform: str | None = Query(default=None), status: str | None = Query(default=None), page: int = Query(default=1, ge=1), page_size: int = Query(default=25, alias="pageSize", ge=1, le=100)) -> JSONResponse:
+    async def activity(request: Request, authorization: str | None = Header(default=None), q: str | None = Query(default=None), platform: str | None = Query(default=None), status: str | None = Query(default=None), action: str | None = Query(default=None), exclude_users: str | None = Query(default=None, alias="excludeUsers", max_length=1700), page: int = Query(default=1, ge=1), page_size: int = Query(default=25, alias="pageSize", ge=1, le=100)) -> JSONResponse:
         _rate_limit(request)
         if not _authorized(authorization):
             raise HTTPException(status_code=401, detail="Unauthorized")
+        if platform and platform not in {"youtube", "instagram", "facebook", "tiktok", "x", "linkedin"}:
+            raise HTTPException(status_code=400, detail="Invalid platform filter")
+        if status and status not in {"started", "completed", "failed", "cancelled"}:
+            raise HTTPException(status_code=400, detail="Invalid status filter")
+        if action and action not in {"download", "transcript", "summary", "transcribe", "summarize"}:
+            raise HTTPException(status_code=400, detail="Invalid action filter")
+        q = q.strip()[:100] if q else None
+        excluded_usernames = _excluded_usernames(exclude_users)
         try:
-            result = activity_store.query_events(q=q, platform=platform, status=status, page=page, page_size=page_size)
+            result = activity_store.query_events(q=q, platform=platform, status=status, action=action, excluded_usernames=excluded_usernames, page=page, page_size=page_size)
         except Exception:
             raise HTTPException(status_code=503, detail="Activity database unavailable") from None
         return JSONResponse(result, headers={"Cache-Control": "no-store"})

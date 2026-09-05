@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+# Unit tests must never load local production secrets or write activity to the
+# configured PostgreSQL database.
+os.environ["YT_DOWNLOADER_TESTING"] = "1"
+os.environ["DATABASE_URL"] = ""
 
 try:
     import backend.main as bot
@@ -229,8 +236,12 @@ class PureFunctionTests(unittest.TestCase):
             bot.ydl_options("/tmp", "4k")
 
     def test_pot_provider_configures_mweb_and_private_provider(self):
-        with patch.object(bot, "YTDLP_POT_PROVIDER_URL", "http://bgutil-provider.railway.internal:4416"), \
-             patch.object(bot, "YTDLP_PLAYER_CLIENT", None):
+        config = replace(
+            bot.DOWNLOADER_CONFIG,
+            po_provider_url="http://bgutil-provider.railway.internal:4416",
+            player_client=None,
+        )
+        with patch.object(bot, "DOWNLOADER_CONFIG", config):
             options = bot.ydl_base_options("/tmp/download")
         self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb"])
         self.assertEqual(
@@ -239,8 +250,12 @@ class PureFunctionTests(unittest.TestCase):
         )
 
     def test_legacy_tv_embedded_client_is_replaced_when_provider_is_enabled(self):
-        with patch.object(bot, "YTDLP_POT_PROVIDER_URL", "http://provider:4416"), \
-             patch.object(bot, "YTDLP_PLAYER_CLIENT", "tv_embedded"):
+        config = replace(
+            bot.DOWNLOADER_CONFIG,
+            po_provider_url="http://provider:4416",
+            player_client="tv_embedded",
+        )
+        with patch.object(bot, "DOWNLOADER_CONFIG", config):
             options = bot.ydl_base_options("/tmp/download")
         self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb"])
 

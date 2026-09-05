@@ -92,7 +92,8 @@ from telegram.ext import (
 
 LOG = logging.getLogger("downloader_bot")
 
-load_dotenv()
+if os.getenv("YT_DOWNLOADER_TESTING", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    load_dotenv()
 configure_logging()
 
 try:
