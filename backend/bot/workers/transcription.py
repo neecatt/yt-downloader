@@ -10,10 +10,12 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from datetime import datetime, timedelta, timezone
 
 from telegram import Bot
 
 from ..queue.config import app
+from ..queue.recovery import retryable, retry_delay_seconds
 from ..persistence import activity_store
 from ..i18n import tr
 from ..platforms.media import display_error
@@ -26,6 +28,10 @@ from ..services import storage
 
 LOG = logging.getLogger("downloader_bot.transcription_worker")
 MAX_RETRIES = max(0, int(os.getenv("TRANSCRIPTION_MAX_RETRIES", "2")))
+try:
+    RETRY_AFTER_MAX_SECONDS = max(60, int(os.getenv("TRANSCRIPTION_RETRY_AFTER_MAX_SECONDS", "900")))
+except ValueError:
+    RETRY_AFTER_MAX_SECONDS = 900
 _WORKER_INITIALIZED = False
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -97,11 +103,6 @@ def initialize_worker_state() -> None:
     if recovered:
         LOG.warning("event=transcription_stale_jobs_recovered count=%s", recovered)
     _WORKER_INITIALIZED = True
-
-
-def _retryable(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return any(marker in text for marker in ("timeout", "timed out", "connection", "temporarily", "429", "500", "502", "503", "resource exhausted", "rate limit"))
 
 
 async def _edit_status(job: dict[str, Any], text: str) -> None:
@@ -198,11 +199,19 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
         return {"status": "missing", "job_id": job_id}
     if job["status"] in {"completed", "cancelled"}:
         return {"status": job["status"], "job_id": job_id}
+    claim = activity_store.claim_transcription_job(job_id)
+    if claim is None:
+        # Do not acknowledge a task when the durable state store is down. The
+        # broker/reconciler must get another chance after the outage is fixed.
+        raise RuntimeError("Transcription state database is temporarily unavailable")
+    if not claim:
+        LOG.info("event=transcription_duplicate_delivery_skipped job_id=%s status=%s", job_id, job["status"])
+        return {"status": "already_processing", "job_id": job_id}
+    job = activity_store.get_transcription_job(job_id) or job
 
     started = time.perf_counter()
     directory = Path(tempfile.mkdtemp(prefix="transcription-"))
     object_key: str | None = None
-    activity_store.update_transcription_job(job_id, status="processing", increment_attempts=True)
     asyncio.run(_refresh_queue_statuses())
     try:
         language = job["language"]
@@ -234,11 +243,27 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
         LOG.info("event=transcription_job_finished job_id=%s total_duration_seconds=%.2f", job_id, time.perf_counter() - started)
         return {"status": "completed", "job_id": job_id}
     except Exception as exc:
-        if _retryable(exc) and self.request.retries < MAX_RETRIES:
-            activity_store.update_transcription_job(job_id, status="queued", error=str(exc))
+        if retryable(exc):
+            countdown = retry_delay_seconds(self.request.retries)
+            next_attempt = datetime.now(timezone.utc) + timedelta(seconds=countdown)
+            activity_store.update_transcription_job(job_id, status="queued", error=str(exc), next_attempt_at=next_attempt)
             asyncio.run(_refresh_queue_statuses())
             LOG.warning("event=transcription_job_retry job_id=%s retry=%s error=%s", job_id, self.request.retries + 1, display_error(exc))
-            raise self.retry(exc=exc, countdown=min(300, 2 ** self.request.retries * 10))
+            if self.request.retries < MAX_RETRIES:
+                raise self.retry(exc=exc, countdown=countdown)
+            # Celery's per-task retry counter is finite. Leave the durable
+            # database job queued; the bot reconciler will submit it again
+            # after the longer cooldown and reset the Celery retry counter.
+            cooldown = RETRY_AFTER_MAX_SECONDS
+            activity_store.update_transcription_job(
+                job_id, status="queued", error=str(exc),
+                next_attempt_at=datetime.now(timezone.utc) + timedelta(seconds=cooldown),
+            )
+            try:
+                asyncio.run(_edit_status(job, tr(job["language"], "transcription_retrying", retry_minutes=max(1, cooldown // 60))))
+            except Exception:
+                LOG.warning("event=transcription_retry_status_failed job_id=%s", job_id, exc_info=True)
+            return {"status": "retry_wait", "job_id": job_id}
         activity_store.update_transcription_job(job_id, status="failed", error=str(exc))
         asyncio.run(_refresh_queue_statuses())
         activity_store.update_event(job.get("activity_id"), status="failed", action="summarize" if job.get("job_type") == "summary" else "transcribe", error=display_error(exc, job["language"]))
