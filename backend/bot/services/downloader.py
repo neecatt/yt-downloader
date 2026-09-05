@@ -50,7 +50,10 @@ def base_options(config: DownloaderConfig, tmpdir: str, progress_callback: Progr
     extractor_args: dict[str, dict[str, list[str]]] = {}
     youtube_args: dict[str, list[str]] = {}
     if config.po_provider_url:
-        youtube_args["player_client"] = [config.player_client or "mweb"]
+        player_client = config.player_client
+        if not player_client or player_client == "tv_embedded":
+            player_client = "mweb"
+        youtube_args["player_client"] = [player_client]
         extractor_args["youtubepot-bgutilhttp"] = {"base_url": [config.po_provider_url]}
     elif config.player_client:
         youtube_args["player_client"] = [config.player_client]

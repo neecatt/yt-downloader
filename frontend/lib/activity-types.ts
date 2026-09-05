@@ -5,3 +5,4 @@ export type ActivitySummary = { total: number; completed: number; failed: number
 export type ActivityResponse = { events: ActivityEvent[]; summary: ActivitySummary; page: number; pageSize: number; total: number; demo?: boolean };
 export function formatBytes(bytes: number | null) { if (bytes === null || !Number.isFinite(bytes)) return "—"; if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`; if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`; return `${(bytes / 1024 ** 3).toFixed(2)} GB`; }
 export function safeUrlLabel(value: string) { try { const url = new URL(value); return `${url.hostname}${url.pathname}`.slice(0, 80); } catch { return value.slice(0, 80); } }
+export function safeExternalUrl(value: string) { try { const url = new URL(value); return url.protocol === "https:" ? url.toString() : null; } catch { return null; } }

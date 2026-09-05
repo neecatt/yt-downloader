@@ -7,13 +7,26 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 _lock = threading.Lock()
 LOG = logging.getLogger("downloader_bot")
 
 
 def _database_url() -> str:
+    if os.getenv("YT_DOWNLOADER_TESTING", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return ""
     return os.getenv("DATABASE_URL", "").strip()
+
+
+def _valid_activity_source(source_url: str) -> bool:
+    if not isinstance(source_url, str) or not source_url or len(source_url) > 4096:
+        return False
+    try:
+        parsed = urlsplit(source_url)
+        return parsed.scheme == "https" and bool(parsed.hostname) and not parsed.username and not parsed.password
+    except ValueError:
+        return False
 
 
 def _connect():
@@ -132,8 +145,21 @@ def initialize() -> None:
 
 
 def create_event(*, username: str | None, display_name: str | None, chat_type: str | None, chat_id: int | None, source_url: str, title: str | None, platform: str, action: str, fmt: str | None = None) -> str | None:
+    # Real Telegram users always have an ID and display name, even when they
+    # choose not to set a public username. Reject anonymous/synthetic writes so
+    # test doubles and malformed updates cannot pollute production activity.
+    if not isinstance(chat_id, int) or chat_id == 0 or not (username or display_name) or not _valid_activity_source(source_url):
+        LOG.warning("Rejected activity event without a valid Telegram identity or HTTPS source")
+        return None
     if not enabled():
         return None
+    username = username[:64] if username else None
+    display_name = display_name[:256] if display_name else None
+    chat_type = chat_type[:32] if chat_type else None
+    title = title[:500] if title else None
+    platform = platform[:40]
+    action = action[:40]
+    fmt = fmt[:40] if fmt else None
     event_id = uuid.uuid4().hex
     now = datetime.now(timezone.utc)
     try:
@@ -582,16 +608,29 @@ def recipient_chat_ids(username: str | None = None) -> list[int]:
     return [int(row[0]) for row in rows]
 
 
-def query_events(*, q: str | None = None, platform: str | None = None, status: str | None = None, page: int = 1, page_size: int = 25) -> dict[str, Any]:
+def query_events(
+    *, q: str | None = None, platform: str | None = None,
+    status: str | None = None, action: str | None = None,
+    excluded_usernames: list[str] | None = None,
+    page: int = 1, page_size: int = 25,
+) -> dict[str, Any]:
     page = max(1, page); page_size = min(100, max(1, page_size)); clauses: list[str] = []; values: list[Any] = []
     if q:
         clauses.append("(telegram_username ILIKE %s OR telegram_display_name ILIKE %s OR source_url ILIKE %s OR title ILIKE %s)"); needle = f"%{q[:100]}%"; values.extend([needle] * 4)
     if platform: clauses.append("platform = %s"); values.append(platform[:40])
     if status: clauses.append("status = %s"); values.append(status[:20])
+    if action: clauses.append("action = %s"); values.append(action[:40])
+    normalized_exclusions = [username.lower().lstrip("@") for username in (excluded_usernames or [])[:50]]
+    if normalized_exclusions:
+        placeholders = ", ".join(["%s"] * len(normalized_exclusions))
+        clauses.append(f"LOWER(LTRIM(COALESCE(telegram_username, ''), '@')) NOT IN ({placeholders})")
+        values.extend(normalized_exclusions)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with _lock, _connect() as connection:
         total = connection.execute(f"SELECT COUNT(*) FROM activity_events {where}", values).fetchone()[0]
-        rows = connection.execute(f"SELECT * FROM activity_events {where} ORDER BY created_at DESC LIMIT %s OFFSET %s", [*values, page_size, (page - 1) * page_size]).fetchall()
+        total_pages = max(1, (int(total) + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        rows = connection.execute(f"SELECT * FROM activity_events {where} ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s", [*values, page_size, (page - 1) * page_size]).fetchall()
         summary = connection.execute(f"SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE status = 'completed') AS completed, COUNT(*) FILTER (WHERE status = 'failed') AS failed, COUNT(DISTINCT COALESCE(telegram_username, telegram_display_name)) AS active_users, COALESCE(SUM(size_bytes), 0) AS total_bytes FROM activity_events {where}", values).fetchone()
     def as_int(value: Any, default: int | None = None) -> int | None:
         return default if value is None else int(value)

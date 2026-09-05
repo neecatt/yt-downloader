@@ -4,14 +4,21 @@ import { hasValidSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
+function boundedInteger(value: string | null, fallback: number, maximum: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? Math.min(maximum, Math.max(1, parsed)) : fallback;
+}
+
 export async function GET(request: NextRequest) {
   if (!(await hasValidSession())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const filters = {
     q: request.nextUrl.searchParams.get("q") || undefined,
     platform: request.nextUrl.searchParams.get("platform") || undefined,
     status: request.nextUrl.searchParams.get("status") || undefined,
-    page: Number(request.nextUrl.searchParams.get("page") || 1),
-    pageSize: Number(request.nextUrl.searchParams.get("pageSize") || 25),
+    action: request.nextUrl.searchParams.get("action") || undefined,
+    excludeUsers: (request.nextUrl.searchParams.get("excludeUsers") || "").split(",").map((value) => value.trim()).filter(Boolean).slice(0, 50),
+    page: boundedInteger(request.nextUrl.searchParams.get("page"), 1, 1_000_000),
+    pageSize: boundedInteger(request.nextUrl.searchParams.get("pageSize"), 25, 100),
   };
   try { return NextResponse.json(await fetchActivity(filters), { headers: { "Cache-Control": "no-store" } }); }
   catch { return NextResponse.json({ error: "Activity service unavailable" }, { status: 502 }); }
