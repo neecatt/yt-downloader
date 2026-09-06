@@ -55,7 +55,11 @@ image = (
         add_python="3.11",
     )
     .entrypoint([])
-    .apt_install("ffmpeg")
+    # Current PyTorch CUDA kernels use Triton launchers that compile a small
+    # native extension on first use. Keep the compiler in the runtime image,
+    # not only in an intermediate build stage.
+    .apt_install("ffmpeg", "build-essential")
+    .env({"CC": "/usr/bin/gcc", "CXX": "/usr/bin/g++"})
     .pip_install("faster-whisper", "torch", "transformers")
 )
 
@@ -71,7 +75,7 @@ def _summarize_text(text: str, language: str) -> str:
         LOG.info("event=summary_model_loading model=%s device=%s dtype=%s", SUMMARY_MODEL_NAME, device, dtype)
         _SUMMARY_TOKENIZER = AutoTokenizer.from_pretrained(SUMMARY_MODEL_NAME)
         _SUMMARY_MODEL = AutoModelForCausalLM.from_pretrained(
-            SUMMARY_MODEL_NAME, torch_dtype=dtype
+            SUMMARY_MODEL_NAME, dtype=dtype
         ).to(device)
         _SUMMARY_MODEL.eval()
         LOG.info("event=summary_model_loaded model=%s device=%s", SUMMARY_MODEL_NAME, device)

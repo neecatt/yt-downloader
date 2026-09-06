@@ -286,6 +286,22 @@ def get_transcription_job(job_id: str) -> dict[str, Any] | None:
         return None
 
 
+def set_transcription_status_message_id(job_id: str, message_id: int) -> bool:
+    """Attach a replacement Telegram status message to an existing durable job."""
+    if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", job_id) or message_id <= 0:
+        return False
+    try:
+        with _lock, _connect() as connection:
+            cursor = connection.execute(
+                "UPDATE transcription_jobs SET status_message_id = %s, updated_at = %s WHERE id = %s AND status IN ('queued', 'processing')",
+                (message_id, datetime.now(timezone.utc), job_id),
+            )
+        return cursor.rowcount == 1
+    except Exception:
+        LOG.warning("Could not attach transcription status message", exc_info=True)
+        return False
+
+
 def get_transcription_queue_status(job_id: str) -> dict[str, Any] | None:
     """Return a live queue position and wait estimate for a transcription job."""
     if not enabled() or not re.fullmatch(r"[a-f0-9]{32}", job_id):
@@ -329,10 +345,14 @@ def get_active_transcription_jobs() -> list[dict[str, Any]]:
     try:
         with _lock, _connect() as connection:
             rows = connection.execute(
-                "SELECT id, status, telegram_chat_id, status_message_id, language_code FROM transcription_jobs WHERE status IN ('queued', 'processing') ORDER BY created_at, id"
+                "SELECT id, status, telegram_chat_id, status_message_id, language_code, job_type, attempts, next_attempt_at FROM transcription_jobs WHERE status IN ('queued', 'processing') ORDER BY created_at, id"
             ).fetchall()
         return [
-            {"id": row[0], "status": row[1], "chat_id": int(row[2]), "status_message_id": row[3], "language": row[4]}
+            {
+                "id": row[0], "status": row[1], "chat_id": int(row[2]),
+                "status_message_id": row[3], "language": row[4], "job_type": row[5],
+                "attempts": int(row[6]), "next_attempt_at": row[7],
+            }
             for row in rows
         ]
     except Exception:

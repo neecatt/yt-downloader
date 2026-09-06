@@ -7,6 +7,32 @@ from backend.bot.persistence import activity_store
 
 
 class ActivityStoreSafetyTests(unittest.TestCase):
+    def test_replacement_status_message_is_attached_only_to_active_job(self):
+        class Cursor:
+            rowcount = 1
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, query, values):
+                self.query = query
+                self.values = values
+                return Cursor()
+
+        connection = Connection()
+        with patch.object(activity_store, "enabled", return_value=True), \
+             patch.object(activity_store, "_connect", return_value=connection):
+            updated = activity_store.set_transcription_status_message_id("a" * 32, 456)
+
+        self.assertTrue(updated)
+        self.assertIn("status IN ('queued', 'processing')", connection.query)
+        self.assertEqual(connection.values[0], 456)
+        self.assertEqual(connection.values[-1], "a" * 32)
+
     def test_test_mode_disables_database_even_when_url_is_present(self):
         with patch.dict(os.environ, {"YT_DOWNLOADER_TESTING": "1", "DATABASE_URL": "postgresql://production"}, clear=True):
             self.assertEqual(activity_store._database_url(), "")

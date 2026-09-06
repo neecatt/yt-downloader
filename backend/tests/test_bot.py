@@ -29,9 +29,10 @@ except ModuleNotFoundError:
 
 
 class FakeMessage:
-    def __init__(self, text: str = "", chat_id: int = 10):
+    def __init__(self, text: str = "", chat_id: int = 10, message_id: int = 123):
         self.text = text
         self.chat_id = chat_id
+        self.message_id = message_id
         self.replies: list[tuple[str, object]] = []
         self.deleted = False
         self.edited: list[str] = []
@@ -420,13 +421,31 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
              patch.object(bot, "r2_is_configured", return_value=True), \
              patch.object(bot, "queue_is_configured", return_value=True), \
              patch.object(bot, "enqueue_transcription") as enqueue, \
-             patch.object(activity_store, "create_transcription_job", return_value="a" * 32), \
+             patch.object(activity_store, "create_transcription_job", return_value="a" * 32) as create_job, \
              patch.object(activity_store, "get_transcription_queue_status", return_value={"position": 3, "eta_minutes": 10}):
             await bot.button_handler(update, SimpleNamespace())
         self.assertIn("position 3", query.edited[0].lower())
         self.assertIn("10 min", query.edited[0].lower())
         enqueue.assert_called_once_with("a" * 32)
+        self.assertEqual(create_job.call_args.kwargs["status_message_id"], message.message_id)
         self.assertNotIn(key, bot.STATES)
+
+    async def test_enqueue_race_does_not_overwrite_processing_status_with_queued(self):
+        update, message = update_for(chat_id=55, user_id=65)
+        query = FakeQuery("s|key", message)
+        try:
+            from backend.bot.persistence import activity_store
+        except ModuleNotFoundError:
+            from bot.persistence import activity_store
+        with patch.object(bot, "queue_is_configured", return_value=True), \
+             patch.object(bot, "enqueue_transcription"), \
+             patch.object(activity_store, "create_transcription_job", return_value="a" * 32), \
+             patch.object(activity_store, "get_transcription_queue_status", return_value={"status": "processing", "position": 1, "eta_minutes": 0}):
+            await bot._run_transcription(
+                update, query, "https://youtu.be/abc", "en", job_type="summary",
+            )
+        self.assertIn("generating the summary", query.edited[-1].lower())
+        self.assertNotIn("queued", query.edited[-1].lower())
 
     async def test_transcription_status_edit_failure_does_not_report_queue_failure(self):
         update, message = update_for(chat_id=55, user_id=65)
