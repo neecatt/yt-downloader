@@ -25,6 +25,7 @@ from ..integrations.cookies import prepare_cookie_file
 from ..integrations.r2_cleanup import schedule_object_delete
 from ..services.downloader import DownloaderConfig, download
 from ..services import storage
+from ..telegram.status import active_job_status_text
 
 
 LOG = logging.getLogger("downloader_bot.transcription_worker")
@@ -108,14 +109,19 @@ def initialize_worker_state() -> None:
 
 async def _edit_status(job: dict[str, Any], text: str) -> None:
     message_id = job.get("status_message_id")
-    if not message_id:
-        return
     try:
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
         if not token:
             raise RuntimeError("Telegram bot token is not configured")
         async with Bot(token=token) as bot:
-            await bot.edit_message_text(chat_id=job["chat_id"], message_id=message_id, text=text)
+            if message_id:
+                await bot.edit_message_text(chat_id=job["chat_id"], message_id=message_id, text=text)
+                return
+            replacement = await bot.send_message(chat_id=job["chat_id"], text=text)
+            replacement_id = getattr(replacement, "message_id", None)
+            if replacement_id and activity_store.set_transcription_status_message_id(job["id"], replacement_id):
+                job["status_message_id"] = replacement_id
+                LOG.info("event=transcription_status_message_replaced job_id=%s", job["id"])
     except Exception:
         LOG.warning("event=transcription_status_update_failed job_id=%s", job["id"], exc_info=True)
 
@@ -123,8 +129,9 @@ async def _edit_status(job: dict[str, Any], text: str) -> None:
 async def _refresh_queue_statuses() -> None:
     """Push current position and ETA to every active transcription message."""
     for job in activity_store.get_active_transcription_jobs():
-        if job["status"] == "processing":
-            await _edit_status(job, tr(job["language"], "transcription_processing"))
+        active_text = active_job_status_text(job)
+        if active_text:
+            await _edit_status(job, active_text)
             continue
         status = activity_store.get_transcription_queue_status(job["id"])
         if status and status.get("position"):
@@ -245,29 +252,22 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
         return {"status": "completed", "job_id": job_id}
     except Exception as exc:
         if retryable(exc):
-            countdown = retry_delay_seconds(self.request.retries)
+            retry_number = self.request.retries + 1
+            exhausted = self.request.retries >= MAX_RETRIES
+            countdown = RETRY_AFTER_MAX_SECONDS if exhausted else retry_delay_seconds(self.request.retries)
             next_attempt = datetime.now(timezone.utc) + timedelta(seconds=countdown)
             activity_store.update_transcription_job(job_id, status="queued", error=str(exc), next_attempt_at=next_attempt)
             asyncio.run(_refresh_queue_statuses())
             diagnostic = safe_log_error(exc) or type(exc).__name__
             LOG.warning(
-                "event=transcription_job_retry job_id=%s retry=%s error_type=%s error=%s",
-                job_id, self.request.retries + 1, type(exc).__name__, diagnostic,
+                "event=transcription_job_retry job_id=%s retry=%s retry_in_seconds=%s error_type=%s error=%s",
+                job_id, retry_number, countdown, type(exc).__name__, diagnostic,
             )
-            if self.request.retries < MAX_RETRIES:
+            if not exhausted:
                 raise self.retry(exc=exc, countdown=countdown)
             # Celery's per-task retry counter is finite. Leave the durable
             # database job queued; the bot reconciler will submit it again
             # after the longer cooldown and reset the Celery retry counter.
-            cooldown = RETRY_AFTER_MAX_SECONDS
-            activity_store.update_transcription_job(
-                job_id, status="queued", error=str(exc),
-                next_attempt_at=datetime.now(timezone.utc) + timedelta(seconds=cooldown),
-            )
-            try:
-                asyncio.run(_edit_status(job, tr(job["language"], "transcription_retrying", retry_minutes=max(1, cooldown // 60))))
-            except Exception:
-                LOG.warning("event=transcription_retry_status_failed job_id=%s", job_id, exc_info=True)
             return {"status": "retry_wait", "job_id": job_id}
         activity_store.update_transcription_job(job_id, status="failed", error=str(exc))
         asyncio.run(_refresh_queue_statuses())

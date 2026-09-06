@@ -9,6 +9,14 @@ from datetime import datetime, timedelta, timezone
 from .commands import _app
 
 
+def _status_message_id(status: Any) -> int | None:
+    """Resolve the edited Telegram message for commands and callback queries."""
+    message_id = getattr(status, "message_id", None)
+    if message_id is not None:
+        return message_id
+    return getattr(getattr(status, "message", None), "message_id", None)
+
+
 async def run_transcription(update: Any, status: Any, url: str, language: str, *, activity_id: str | None = None, job_type: str = "transcript") -> None:
     app = _app()
 
@@ -26,7 +34,7 @@ async def run_transcription(update: Any, status: Any, url: str, language: str, *
         job_id = activity_store.create_transcription_job(
             activity_id=activity_id, chat_id=update.effective_chat.id,
             user_id=user.id if user else 0, source_url=url, language=language,
-            status_message_id=getattr(status, "message_id", None),
+            status_message_id=_status_message_id(status),
             job_type=job_type,
         )
         if not job_id:
@@ -54,7 +62,9 @@ async def run_transcription(update: Any, status: Any, url: str, language: str, *
     # Celery may start the job and update this message concurrently.
     try:
         queue_status = activity_store.get_transcription_queue_status(job_id)
-        if queue_status and queue_status.get("position"):
+        if queue_status and queue_status.get("status") == "processing":
+            await edit(app.tr(language, "summarization_processing" if job_type == "summary" else "transcription_processing"))
+        elif queue_status and queue_status.get("position"):
             await edit(app.tr(
                 language, "transcription_queued_with_position",
                 position=queue_status["position"], eta_minutes=queue_status["eta_minutes"],
