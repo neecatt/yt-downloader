@@ -1,5 +1,11 @@
+import contextlib
+import importlib.util
 import os
+import sys
+import types
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 try:
@@ -19,6 +25,78 @@ except ModuleNotFoundError:
 
 
 class TranscriptionTests(unittest.TestCase):
+    def test_summary_generation_passes_token_fields_to_model(self):
+        class FakeImage:
+            def entrypoint(self, *_args, **_kwargs):
+                return self
+
+            def apt_install(self, *_args, **_kwargs):
+                return self
+
+            def pip_install(self, *_args, **_kwargs):
+                return self
+
+        class FakeApp:
+            def function(self, *_args, **_kwargs):
+                return lambda function: function
+
+        fake_modal = types.ModuleType("modal")
+        fake_modal.App = lambda _name: FakeApp()
+        fake_modal.Volume = SimpleNamespace(from_name=lambda *_args, **_kwargs: object())
+        fake_modal.Image = SimpleNamespace(from_registry=lambda *_args, **_kwargs: FakeImage())
+
+        class FakeTensor:
+            shape = (1, 3)
+
+            def to(self, device):
+                self.device = device
+                return self
+
+        class FakeTokenizer:
+            def __init__(self):
+                self.template_kwargs = None
+
+            def apply_chat_template(self, _messages, **kwargs):
+                self.template_kwargs = kwargs
+                return {"input_ids": FakeTensor(), "attention_mask": FakeTensor()}
+
+            def decode(self, tokens, **_kwargs):
+                self.decoded_tokens = tokens
+                return "Generated summary"
+
+        class FakeModel:
+            def parameters(self):
+                return iter([SimpleNamespace(device="cuda")])
+
+            def generate(self, **kwargs):
+                self.generation_kwargs = kwargs
+                return [[10, 11, 12, 99]]
+
+        fake_torch = types.ModuleType("torch")
+        fake_torch.inference_mode = contextlib.nullcontext
+        fake_transformers = types.ModuleType("transformers")
+        fake_transformers.AutoModelForCausalLM = object()
+        fake_transformers.AutoTokenizer = object()
+
+        module_path = Path(__file__).parents[1] / "modal_transcriber.py"
+        spec = importlib.util.spec_from_file_location("modal_transcriber_under_test", module_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"modal": fake_modal, "torch": fake_torch, "transformers": fake_transformers}):
+            spec.loader.exec_module(module)
+            tokenizer = FakeTokenizer()
+            model = FakeModel()
+            module._SUMMARY_TOKENIZER = tokenizer
+            module._SUMMARY_MODEL = model
+            summary = module._summarize_text("Transcript text", "English")
+
+        self.assertEqual(summary, "Generated summary")
+        self.assertTrue(tokenizer.template_kwargs["return_dict"])
+        self.assertIn("input_ids", model.generation_kwargs)
+        self.assertIn("attention_mask", model.generation_kwargs)
+        self.assertEqual(tokenizer.decoded_tokens, [99])
+
     def test_queue_requires_private_redis_url(self):
         try:
             from backend.bot.queue import queue_is_configured
