@@ -27,10 +27,19 @@ except ModuleNotFoundError:
 class TranscriptionTests(unittest.TestCase):
     def test_summary_generation_passes_token_fields_to_model(self):
         class FakeImage:
+            def __init__(self):
+                self.apt_packages = ()
+                self.environment = {}
+
             def entrypoint(self, *_args, **_kwargs):
                 return self
 
-            def apt_install(self, *_args, **_kwargs):
+            def apt_install(self, *packages, **_kwargs):
+                self.apt_packages = packages
+                return self
+
+            def env(self, values):
+                self.environment.update(values)
                 return self
 
             def pip_install(self, *_args, **_kwargs):
@@ -43,7 +52,8 @@ class TranscriptionTests(unittest.TestCase):
         fake_modal = types.ModuleType("modal")
         fake_modal.App = lambda _name: FakeApp()
         fake_modal.Volume = SimpleNamespace(from_name=lambda *_args, **_kwargs: object())
-        fake_modal.Image = SimpleNamespace(from_registry=lambda *_args, **_kwargs: FakeImage())
+        fake_image = FakeImage()
+        fake_modal.Image = SimpleNamespace(from_registry=lambda *_args, **_kwargs: fake_image)
 
         class FakeTensor:
             shape = (1, 3)
@@ -96,6 +106,8 @@ class TranscriptionTests(unittest.TestCase):
         self.assertIn("input_ids", model.generation_kwargs)
         self.assertIn("attention_mask", model.generation_kwargs)
         self.assertEqual(tokenizer.decoded_tokens, [99])
+        self.assertIn("build-essential", fake_image.apt_packages)
+        self.assertEqual(fake_image.environment["CC"], "/usr/bin/gcc")
 
     def test_queue_requires_private_redis_url(self):
         try:
