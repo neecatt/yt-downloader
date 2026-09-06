@@ -34,6 +34,7 @@ class FakeMessage:
         self.replies: list[tuple[str, object]] = []
         self.deleted = False
         self.edited: list[str] = []
+        self.edited_markup = []
         self.documents = []
 
     async def reply_text(self, text: str, **kwargs):
@@ -42,6 +43,7 @@ class FakeMessage:
 
     async def edit_text(self, text: str, **kwargs):
         self.edited.append(text)
+        self.edited_markup.append(kwargs.get("reply_markup"))
         return self
 
     async def delete(self):
@@ -81,6 +83,7 @@ class FakeQuery:
         self.message = message
         self.answers = 0
         self.edited: list[str] = []
+        self.edited_markup = []
         self.deleted = False
 
     async def answer(self):
@@ -88,6 +91,7 @@ class FakeQuery:
 
     async def edit_message_text(self, text: str, **kwargs):
         self.edited.append(text)
+        self.edited_markup.append(kwargs.get("reply_markup"))
 
     async def delete_message(self):
         self.deleted = True
@@ -223,6 +227,16 @@ class PureFunctionTests(unittest.TestCase):
         self.assertEqual(bot.safe_filename("unsafe/title:*?", "mp4"), "unsafetitle.mp4")
         self.assertEqual(bot.safe_filename("", "mp3"), "download.mp3")
 
+    def test_grouped_format_keyboards_keep_every_existing_format(self):
+        key = "example"
+        main_callbacks = {button.callback_data for row in bot.format_choice_keyboard(key, "en").inline_keyboard for button in row}
+        video_callbacks = {button.callback_data for row in bot.video_formats_keyboard(key, "en").inline_keyboard for button in row}
+        audio_callbacks = {button.callback_data for row in bot.audio_formats_keyboard(key, "en").inline_keyboard for button in row}
+
+        self.assertTrue({f"d|720p|{key}", f"d|mp3_192|{key}", f"t|{key}", f"s|{key}", f"m|video|{key}", f"m|audio|{key}"}.issubset(main_callbacks))
+        self.assertTrue({f"d|360p|{key}", f"d|480p|{key}", f"d|720p|{key}", f"d|1080p|{key}", f"d|best|{key}"}.issubset(video_callbacks))
+        self.assertTrue({f"d|mp3_128|{key}", f"d|mp3_192|{key}", f"d|mp3_320|{key}"}.issubset(audio_callbacks))
+
     def test_ydl_options_cover_audio_video_and_invalid_formats(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             audio = bot.ydl_options(tmpdir, "mp3")
@@ -347,7 +361,8 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         update, message = update_for()
         await bot.start(update, SimpleNamespace())
         self.assertIn("YouTube", message.replies[0][0])
-        self.assertIn("/download", message.replies[0][0])
+        self.assertIn("Send me a public video link", message.replies[0][0])
+        self.assertIn("/help", message.replies[0][0])
 
     async def test_start_shows_support_button_when_configured(self):
         update, message = update_for()
@@ -366,7 +381,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         update.callback_query = query
         with patch.object(bot, "activity_store", create=True):
             await bot.language_button_handler(update, SimpleNamespace(), "ru")
-        self.assertIn("Добро пожаловать", query.edited[0])
+        self.assertIn("Отправьте публичную ссылку", query.edited[0])
 
     async def test_settings_command_shows_language_buttons(self):
         update, message = update_for()
@@ -467,12 +482,26 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         callbacks = [button.callback_data for row in markup.inline_keyboard for button in row]
         self.assertIn("d|720p", " ".join(callbacks))
         self.assertIn("s|", " ".join(callbacks))
+        self.assertIn("m|video", " ".join(callbacks))
         self.assertEqual(len(bot.STATES), 1)
 
     async def test_message_handler_rejects_unsupported_input(self):
         update, message = update_for("not a video link")
         await bot.handle_message(update, SimpleNamespace())
         self.assertIn("YouTube, TikTok, Instagram, Facebook, X, or LinkedIn", message.replies[0][0])
+
+    async def test_format_submenu_edits_existing_choice_message(self):
+        update, message = update_for()
+        key = bot.save_state(update, "https://youtu.be/abc", {"title": "Example"})
+        query = FakeQuery(f"m|video|{key}", message)
+        update.callback_query = query
+
+        await bot.button_handler(update, SimpleNamespace())
+
+        self.assertIn("video quality", query.edited[0].lower())
+        callbacks = [button.callback_data for row in query.edited_markup[0].inline_keyboard for button in row]
+        self.assertIn(f"d|1080p|{key}", callbacks)
+        self.assertIn(f"m|main|{key}", callbacks)
 
     async def test_x_photo_link_explains_that_bot_is_video_only(self):
         update, message = update_for("https://x.com/example/status/123/photo/1")
@@ -492,9 +521,10 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         fake_info = {"title": "Example", "duration": 65}
         with patch.object(bot, "analyze_url", return_value=fake_info):
             await bot.download_command(update, context)
-        self.assertEqual(len(message.replies), 2)
-        self.assertTrue(message.deleted)
-        self.assertIn("Example", message.replies[1][0])
+        self.assertEqual(len(message.replies), 1)
+        self.assertFalse(message.deleted)
+        self.assertIn("Example", message.edited[0])
+        self.assertIsNotNone(message.edited_markup[0])
 
     async def test_download_command_reports_analysis_failure(self):
         update, message = update_for()
@@ -528,7 +558,8 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(query.answers, 1)
         self.assertTrue(query.deleted)
         self.assertEqual(len(context.bot.audio), 1)
-        self.assertEqual(len(context.bot.messages), 1)
+        self.assertEqual(len(context.bot.messages), 0)
+        self.assertEqual(context.bot.audio[0]["reply_markup"].inline_keyboard[0][0].text, "☕ Support this bot")
         self.assertTrue(any("Uploading" in text for text in query.edited))
         self.assertNotIn(key, bot.STATES)
 
