@@ -33,8 +33,10 @@ async def pending_delivery(update: Any, context: Any, mode: str, key: str) -> No
             loop = asyncio.get_running_loop()
             if mode == "telegram":
                 await query.edit_message_text(app.tr(language, "upload_telegram"))
-                await app.send_file(context, pending.chat_id, pending.filename, pending.info, pending.extension, pending.fmt)
-                await app.send_support_prompt(context, pending.chat_id, pending.user_id)
+                offer_support = app.support_prompt_allowed(pending.chat_id, pending.user_id)
+                await app.send_file(context, pending.chat_id, pending.filename, pending.info, pending.extension, pending.fmt, app.support_keyboard(language) if offer_support else None)
+                if offer_support:
+                    app.mark_support_prompt_shown(pending.chat_id, pending.user_id)
                 delivery = "telegram"
             else:
                 await query.edit_message_text(app.tr(language, "prepare_link"))
@@ -99,6 +101,26 @@ async def handle(update: Any, context: Any) -> None:
     if action == "p":
         await pending_delivery(update, context, value, key)
         return
+    if action == "m":
+        state = app.get_state(key, update)
+        language = app.language_for_update(update)
+        if not state:
+            await query.edit_message_text(app.tr(language, "link_expired"))
+            return
+        if value == "video":
+            text = app.tr(language, "choose_video_quality")
+            markup = app.video_formats_keyboard(key, language)
+        elif value == "audio":
+            text = app.tr(language, "choose_audio_quality")
+            markup = app.audio_formats_keyboard(key, language)
+        elif value == "main":
+            text = app.choice_prompt(language, state.title, state.duration)
+            markup = app.format_choice_keyboard(key, language)
+        else:
+            await query.edit_message_text(app.tr(language, "invalid_button"))
+            return
+        await query.edit_message_text(text, reply_markup=markup)
+        return
     if action != "d":
         await query.edit_message_text(app.tr(app.language_for_update(update), "invalid_button"))
         return
@@ -139,8 +161,10 @@ async def handle(update: Any, context: Any) -> None:
                 return
             elif size <= app.MAX_UPLOAD_BYTES:
                 await query.edit_message_text(app.tr(language, "upload_telegram"))
-                await app.send_file(context, state.chat_id, filename, info, extension, value)
-                await app.send_support_prompt(context, state.chat_id, state.user_id)
+                offer_support = app.support_prompt_allowed(state.chat_id, state.user_id)
+                await app.send_file(context, state.chat_id, filename, info, extension, value, app.support_keyboard(language) if offer_support else None)
+                if offer_support:
+                    app.mark_support_prompt_shown(state.chat_id, state.user_id)
                 delivery = "telegram"
             else:
                 raise ValueError("The file exceeds Telegram's upload limit and cloud delivery is not configured")

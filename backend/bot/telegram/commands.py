@@ -94,22 +94,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(f"{app.tr(language, 'help')}\n\n{app.tr(language, 'transcription_help')}")
 
 
-async def make_choice(update: Update, url: str, info: dict[str, Any] | None = None) -> None:
+def choice_prompt(language: str, title: str, duration: int | float | None) -> str:
+    app = _app()
+    duration_line = f"\n⏱ {app.tr(language, 'duration')}: {app.format_duration(duration)}" if duration else ""
+    return app.tr(language, "choose_format", title=title, duration=duration_line)
+
+
+async def make_choice(update: Update, url: str, info: dict[str, Any] | None = None, *, status: Any | None = None) -> None:
     app = _app()
     key = app.save_state(update, url, info)
     language = app.language_for_update(update)
     title = (info or {}).get("title", "Video")
     duration = (info or {}).get("duration")
-    duration_line = f"\n⏱ {app.tr(language, 'duration')}: {app.format_duration(duration)}" if duration else ""
-    keyboard = [
-        [app.InlineKeyboardButton(app.tr(language, "fast_360"), callback_data=f"d|360p|{key}"), app.InlineKeyboardButton(app.tr(language, "quality_480"), callback_data=f"d|480p|{key}")],
-        [app.InlineKeyboardButton(app.tr(language, "quality_720"), callback_data=f"d|720p|{key}"), app.InlineKeyboardButton(app.tr(language, "quality_1080"), callback_data=f"d|1080p|{key}")],
-        [app.InlineKeyboardButton(app.tr(language, "best"), callback_data=f"d|best|{key}")],
-        [app.InlineKeyboardButton(app.tr(language, "mp3_128"), callback_data=f"d|mp3_128|{key}"), app.InlineKeyboardButton(app.tr(language, "mp3_192"), callback_data=f"d|mp3_192|{key}")],
-        [app.InlineKeyboardButton(app.tr(language, "mp3_320"), callback_data=f"d|mp3_320|{key}")],
-        [app.InlineKeyboardButton(app.tr(language, "transcribe"), callback_data=f"t|{key}"), app.InlineKeyboardButton(app.tr(language, "summarize"), callback_data=f"s|{key}")],
-    ]
-    await update.effective_message.reply_text(app.tr(language, "choose_format", title=title, duration=duration_line), reply_markup=app.InlineKeyboardMarkup(keyboard))
+    text = choice_prompt(language, title, duration)
+    markup = app.format_choice_keyboard(key, language)
+    if status is not None:
+        method = getattr(status, "edit_message_text", None) or getattr(status, "edit_text")
+        await method(text, reply_markup=markup)
+    else:
+        await update.effective_message.reply_text(text, reply_markup=markup)
 
 
 async def download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -130,8 +133,7 @@ async def download(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     status = await update.effective_message.reply_text(app.tr(language, "analyzing"))
     try:
         info = await asyncio.get_running_loop().run_in_executor(app.EXECUTOR, app.analyze_url, url)
-        await status.delete()
-        await app.make_choice(update, url, info)
+        await app.make_choice(update, url, info, status=status)
     except Exception as exc:
         app.LOG.info("analysis failed for %s: %s", app.safe_log_url(url), app.safe_log_error(exc))
         if app.should_offer_transcription_fallback(exc) and app.transcription_is_configured() and app.r2_is_configured():

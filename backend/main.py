@@ -508,6 +508,7 @@ download_command = commands.download
 transcribe_command = commands.transcribe
 summarize_command = commands.summarize
 make_choice = commands.make_choice
+choice_prompt = commands.choice_prompt
 send_file = delivery.send_file
 send_r2_link = delivery.send_r2_link
 run_download_with_progress = delivery.download_with_progress
@@ -515,6 +516,9 @@ button_handler = callbacks.handle
 handle_message = messages.handle
 _run_transcription = messages.run_transcription
 delivery_choice_keyboard = keyboards.delivery_choice
+format_choice_keyboard = keyboards.format_choice
+video_formats_keyboard = keyboards.video_formats
+audio_formats_keyboard = keyboards.audio_formats
 
 
 # Compatibility wrappers keep the Telegram handlers and tests focused on bot

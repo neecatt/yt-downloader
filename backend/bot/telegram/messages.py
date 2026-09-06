@@ -89,8 +89,7 @@ async def handle(update: Any, context: Any) -> None:
     status = await update.effective_message.reply_text(app.tr(language, "checking"))
     try:
         info = await asyncio.get_running_loop().run_in_executor(app.EXECUTOR, app.analyze_url, url)
-        await status.delete()
-        await app.make_choice(update, url, info)
+        await app.make_choice(update, url, info, status=status)
     except Exception as exc:
         app.LOG.info("media-type analysis failed for %s: %s", app.safe_log_url(url), app.safe_log_error(exc))
         if app.should_offer_transcription_fallback(exc) and app.transcription_is_configured() and app.r2_is_configured():

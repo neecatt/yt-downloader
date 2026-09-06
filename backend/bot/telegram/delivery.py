@@ -17,7 +17,7 @@ from telegram.error import TelegramError
 from .commands import _app
 
 
-async def send_file(context: Any, chat_id: int, filename: Path, info: dict[str, Any], extension: str, fmt: str) -> None:
+async def send_file(context: Any, chat_id: int, filename: Path, info: dict[str, Any], extension: str, fmt: str, reply_markup: InlineKeyboardMarkup | None = None) -> None:
     app = _app()
     started = time.perf_counter()
     size = filename.stat().st_size
@@ -28,11 +28,11 @@ async def send_file(context: Any, chat_id: int, filename: Path, info: dict[str, 
     caption = f"{title[:900]} · {fmt}"
     with filename.open("rb") as media:
         if extension == "mp3":
-            await context.bot.send_audio(chat_id=chat_id, audio=media, filename=name, title=title[:64], caption=caption)
+            await context.bot.send_audio(chat_id=chat_id, audio=media, filename=name, title=title[:64], caption=caption, reply_markup=reply_markup)
         elif extension == "mp4":
-            await context.bot.send_video(chat_id=chat_id, video=media, filename=name, supports_streaming=True, caption=caption, read_timeout=300, write_timeout=300)
+            await context.bot.send_video(chat_id=chat_id, video=media, filename=name, supports_streaming=True, caption=caption, reply_markup=reply_markup, read_timeout=300, write_timeout=300)
         else:
-            await context.bot.send_document(chat_id=chat_id, document=media, filename=name, caption=caption, read_timeout=300, write_timeout=300)
+            await context.bot.send_document(chat_id=chat_id, document=media, filename=name, caption=caption, reply_markup=reply_markup, read_timeout=300, write_timeout=300)
     app.log_timing(app.LOG, "telegram_delivery_finished", started, chat_id=chat_id, size_bytes=size, extension=extension)
 
 
