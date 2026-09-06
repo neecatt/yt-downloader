@@ -19,6 +19,7 @@ from ..queue.recovery import retryable, retry_delay_seconds
 from ..persistence import activity_store
 from ..i18n import tr
 from ..platforms.media import display_error
+from ..platforms.security import safe_log_error
 from ..integrations.transcription import format_transcript, transcript_filename, transcribe_audio_url_sync
 from ..integrations.cookies import prepare_cookie_file
 from ..integrations.r2_cleanup import schedule_object_delete
@@ -248,7 +249,11 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
             next_attempt = datetime.now(timezone.utc) + timedelta(seconds=countdown)
             activity_store.update_transcription_job(job_id, status="queued", error=str(exc), next_attempt_at=next_attempt)
             asyncio.run(_refresh_queue_statuses())
-            LOG.warning("event=transcription_job_retry job_id=%s retry=%s error=%s", job_id, self.request.retries + 1, display_error(exc))
+            diagnostic = safe_log_error(exc) or type(exc).__name__
+            LOG.warning(
+                "event=transcription_job_retry job_id=%s retry=%s error_type=%s error=%s",
+                job_id, self.request.retries + 1, type(exc).__name__, diagnostic,
+            )
             if self.request.retries < MAX_RETRIES:
                 raise self.retry(exc=exc, countdown=countdown)
             # Celery's per-task retry counter is finite. Leave the durable
