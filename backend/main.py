@@ -90,6 +90,8 @@ from telegram.ext import (
     filters,
 )
 
+CALLBACK_QUERY_PATTERN = r"^(?:d|m|p|t|s|lang)\|"
+
 LOG = logging.getLogger("downloader_bot")
 
 if os.getenv("YT_DOWNLOADER_TESTING", "").strip().lower() not in {"1", "true", "yes", "on"}:
@@ -692,7 +694,7 @@ def main() -> None:
     application.add_handler(CommandHandler("download", download_command))
     application.add_handler(CommandHandler("transcribe", transcribe_command))
     application.add_handler(CommandHandler("summarize", summarize_command))
-    application.add_handler(CallbackQueryHandler(button_handler, pattern=r"^(?:d|p|t|s|lang)\|"))
+    application.add_handler(CallbackQueryHandler(button_handler, pattern=CALLBACK_QUERY_PATTERN))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     LOG.info("event=telegram_polling_start")
     application.run_polling(allowed_updates=Update.ALL_TYPES)

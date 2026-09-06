@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import re
 import tempfile
 import unittest
 from dataclasses import replace
@@ -160,6 +161,11 @@ class PureFunctionTests(unittest.TestCase):
         bot.STATES.clear()
         bot.LANGUAGE_CACHE.clear()
         bot.SUPPORT_PROMPT_LAST_SHOWN.clear()
+
+    def test_callback_pattern_routes_every_keyboard_action(self):
+        for action in ("d", "m", "p", "t", "s", "lang"):
+            with self.subTest(action=action):
+                self.assertIsNotNone(re.match(bot.CALLBACK_QUERY_PATTERN, f"{action}|value"))
 
     def test_extracts_supported_https_links_and_strips_punctuation(self):
         self.assertEqual(bot.extract_url("See https://youtu.be/abc123."), "https://youtu.be/abc123")
