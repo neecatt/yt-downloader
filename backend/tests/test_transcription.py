@@ -66,7 +66,8 @@ class TranscriptionTests(unittest.TestCase):
             def __init__(self):
                 self.template_kwargs = None
 
-            def apply_chat_template(self, _messages, **kwargs):
+            def apply_chat_template(self, messages, **kwargs):
+                self.messages = messages
                 self.template_kwargs = kwargs
                 return {"input_ids": FakeTensor(), "attention_mask": FakeTensor()}
 
@@ -108,6 +109,11 @@ class TranscriptionTests(unittest.TestCase):
         self.assertEqual(tokenizer.decoded_tokens, [99])
         self.assertIn("build-essential", fake_image.apt_packages)
         self.assertEqual(fake_image.environment["CC"], "/usr/bin/gcc")
+        prompt = tokenizer.messages[1]["content"]
+        self.assertIn("Write the summary in English", prompt)
+        self.assertIn("Refer to the source as 'the video'", prompt)
+        self.assertIn("Do not turn advertisements", prompt)
+        self.assertIn("If the usable speech is sparse", prompt)
 
     def test_queue_requires_private_redis_url(self):
         try:
