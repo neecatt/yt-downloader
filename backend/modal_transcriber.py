@@ -83,11 +83,25 @@ def _summarize_text(text: str, language: str) -> str:
             f"TRANSCRIPT:\n{text}"
         )},
     ]
-    inputs = _SUMMARY_TOKENIZER.apply_chat_template(messages, return_tensors="pt", add_generation_prompt=True)
-    inputs = inputs.to(next(_SUMMARY_MODEL.parameters()).device)
+    inputs = _SUMMARY_TOKENIZER.apply_chat_template(
+        messages,
+        tokenize=True,
+        return_tensors="pt",
+        return_dict=True,
+        add_generation_prompt=True,
+    )
+    device = next(_SUMMARY_MODEL.parameters()).device
+    inputs = {name: tensor.to(device) for name, tensor in inputs.items()}
+    input_ids = inputs.get("input_ids")
+    if input_ids is None:
+        raise RuntimeError("The summary tokenizer did not return input IDs")
     with torch.inference_mode():
-        output = _SUMMARY_MODEL.generate(inputs, max_new_tokens=SUMMARY_MAX_OUTPUT_TOKENS, do_sample=False)
-    return _SUMMARY_TOKENIZER.decode(output[0][inputs.shape[-1]:], skip_special_tokens=True).strip()
+        output = _SUMMARY_MODEL.generate(
+            **inputs,
+            max_new_tokens=SUMMARY_MAX_OUTPUT_TOKENS,
+            do_sample=False,
+        )
+    return _SUMMARY_TOKENIZER.decode(output[0][input_ids.shape[-1]:], skip_special_tokens=True).strip()
 
 
 def _summarize_transcript(text: str, language: str) -> str:
