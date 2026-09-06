@@ -7,7 +7,7 @@ LANGUAGE_NAMES = {"en": "🇬🇧 English", "ru": "🇷🇺 Русский", "az
 
 _TEXT: dict[str, dict[str, str]] = {
     "en": {
-        "welcome": "🎬 Welcome to your fast media downloader!\n\nSend me a public video link from:\n\n• YouTube\n• TikTok\n• Instagram\n• Facebook\n• X\n• LinkedIn\n\nAfter I analyze the link, you can choose:\n\n• 360p, 480p, 720p, or 1080p video\n• Best available quality\n• MP3 audio at 128, 192, or 320 kbps\n\nFor smaller files, you can choose whether to receive the media directly in Telegram or get a temporary download link. Larger files are automatically provided through a temporary download link.\n\nThe bot supports public video posts only. Private accounts, login-protected content, image posts, photo posts, and carousels are not supported.\n\nCommands:\n\n/start — Show the welcome message\n/download — Download a video using a link\n/feedback — Send feedback or suggest an improvement\n/support — Support the continued development of the bot\n\nEnjoy fast, simple, and convenient downloads. 🚀",
+        "welcome": "🎬 Send me a public video link.\n\nChoose video, MP3, transcript, or summary. Small files can be sent through Telegram; large files get a temporary download link.\n\nYouTube · TikTok · Instagram · Facebook · X · LinkedIn",
         "support": "If this bot saves you time, you can support its hosting costs.\n\nDonations are completely optional, and the bot remains free for everyone. ☕",
         "support_unconfigured": "Support is not configured yet, but the bot remains free to use.",
         "feedback_usage": "Thanks for helping improve the bot! Send your feedback like this:\n\n/feedback Your message here",
@@ -25,7 +25,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "analyzing": "🔎 Analyzing the link…",
         "checking": "🔎 Checking the link…",
         "choose_format": "🎬 {title}{duration}\n\nChoose a format:",
-        "fast_360": "360p · fast", "quality_480": "480p", "quality_720": "720p", "quality_1080": "1080p",
+        "fast_360": "360p · fast", "quality_480": "480p", "quality_720": "720p", "quality_1080": "1080p", "recommended_720": "▶️ 720p · recommended", "video_options": "🎞 Other video", "audio_options": "🎧 Other MP3", "back_to_formats": "‹ Back", "choose_video_quality": "🎞 Choose video quality:", "choose_audio_quality": "🎧 Choose MP3 quality:",
         "best": "Best quality", "mp3_128": "MP3 · 128 kbps", "mp3_192": "MP3 · 192 kbps", "mp3_320": "MP3 · 320 kbps",
         "ready_choice": "✅ Ready: {title}\nSize: {size:.1f} MB\n\nHow would you like to receive it?",
         "link_unconfigured": "Download links are not configured. Please choose Telegram delivery instead.",
@@ -44,7 +44,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "ready_link_large": "The media exceeds Telegram's upload limit, so I’m giving you a temporary download link instead.",
     },
     "ru": {
-        "welcome": "🎬 Добро пожаловать в быстрый загрузчик медиа!\n\nОтправьте публичную ссылку на видео из:\n\n• YouTube\n• TikTok\n• Instagram\n• Facebook\n• X\n• LinkedIn\n\nПосле анализа ссылки вы сможете выбрать:\n\n• Видео 360p, 480p, 720p или 1080p\n• Лучшее доступное качество\n• MP3 с битрейтом 128, 192 или 320 кбит/с\n\nДля небольших файлов можно выбрать отправку прямо в Telegram или временную ссылку для скачивания. Большие файлы автоматически выдаются по временной ссылке.\n\nПоддерживаются только публичные видеопубликации. Приватные аккаунты, материалы с авторизацией, изображения, фотографии и карусели не поддерживаются.\n\nКоманды:\n\n/start — Показать приветствие\n/download — Скачать видео по ссылке\n/feedback — Отправить отзыв или предложение\n/support — Поддержать развитие бота\n\nБыстрых и удобных загрузок! 🚀",
+        "welcome": "🎬 Отправьте публичную ссылку на видео.\n\nВыберите видео, MP3, расшифровку или краткое содержание. Небольшие файлы можно получить в Telegram, большие — по временной ссылке.\n\nYouTube · TikTok · Instagram · Facebook · X · LinkedIn",
         "support": "Если бот экономит ваше время, вы можете поддержать расходы на его хостинг.\n\nПожертвования полностью добровольны, бот остаётся бесплатным для всех. ☕",
         "support_unconfigured": "Поддержка пока не настроена, но бот остаётся бесплатным.",
         "feedback_usage": "Спасибо, что помогаете улучшать бота! Отправьте отзыв так:\n\n/feedback Ваше сообщение",
@@ -56,11 +56,11 @@ _TEXT: dict[str, dict[str, str]] = {
         "language_saved": "Язык обновлён.", "settings_language": "🌐 Выберите язык:", "duration": "Длительность", "video_only": "Это публикация с изображением или каруселью. Бот скачивает только видео и аудио. Отправьте ссылку на отдельное видео.", "download_file": "⬇️ Скачать файл", "invalid_link": "Отправьте HTTPS-ссылку на YouTube, TikTok, Instagram, Facebook, X или LinkedIn.",
         "download_usage": "Использование: /download <https-ссылка>", "download_url": "Укажите одну корректную HTTPS-ссылку на видео.",
         "analysis_limit": "Вы достигли часового лимита анализа ссылок. Попробуйте позже.", "analyzing": "🔎 Анализирую ссылку…", "checking": "🔎 Проверяю ссылку…",
-        "choose_format": "🎬 {title}{duration}\n\nВыберите формат:", "fast_360": "360p · быстро", "quality_480": "480p", "quality_720": "720p", "quality_1080": "1080p", "best": "Лучшее качество", "mp3_128": "MP3 · 128 кбит/с", "mp3_192": "MP3 · 192 кбит/с", "mp3_320": "MP3 · 320 кбит/с",
+        "choose_format": "🎬 {title}{duration}\n\nВыберите формат:", "fast_360": "360p · быстро", "quality_480": "480p", "quality_720": "720p", "quality_1080": "1080p", "recommended_720": "▶️ 720p · рекомендуется", "video_options": "🎞 Другое видео", "audio_options": "🎧 Другой MP3", "back_to_formats": "‹ Назад", "choose_video_quality": "🎞 Выберите качество видео:", "choose_audio_quality": "🎧 Выберите качество MP3:", "best": "Лучшее качество", "mp3_128": "MP3 · 128 кбит/с", "mp3_192": "MP3 · 192 кбит/с", "mp3_320": "MP3 · 320 кбит/с",
         "ready_choice": "✅ Готово: {title}\nРазмер: {size:.1f} МБ\n\nКак отправить файл?", "link_unconfigured": "Ссылки для скачивания не настроены. Выберите отправку в Telegram.", "delivery_expired": "Выбор доставки истёк. Отправьте ссылку ещё раз.", "upload_telegram": "⬆️ Отправляю в Telegram…\nЗагрузка: 100%", "prepare_link": "☁️ Подготавливаю ссылку…", "telegram_failed_other": "Telegram не смог принять файл. Попробуйте другой способ доставки.", "telegram_failed_quality": "Telegram не смог принять файл. Попробуйте более низкое качество.", "downloading": "⬇️ Загружаю {fmt}…", "upload_cloud": "☁️ Загружаю в облачное хранилище…\nЗагрузка: 100%", "already_running": "В этом чате уже выполняется загрузка. Подождите.", "download_limit": "Вы достигли лимита загрузок. Попробуйте позже.", "invalid_button": "Эта кнопка больше недействительна. Отправьте ссылку ещё раз.", "link_expired": "Срок действия ссылки истёк. Отправьте её ещё раз.", "ready_link_choice": "Вы выбрали временную ссылку для скачивания.", "ready_link_large": "Файл превышает лимит Telegram, поэтому я выдаю временную ссылку для скачивания.",
     },
     "az": {
-        "welcome": "🎬 Sürətli media yükləyicisinə xoş gəlmisiniz!\n\nAşağıdakı platformalardan ictimai video linki göndərin:\n\n• YouTube\n• TikTok\n• Instagram\n• Facebook\n• X\n• LinkedIn\n\nLink analiz edildikdən sonra bunları seçə bilərsiniz:\n\n• 360p, 480p, 720p və ya 1080p video\n• Mövcud ən yaxşı keyfiyyət\n• 128, 192 və ya 320 kbit/s MP3\n\nKiçik fayllar üçün Telegram-a birbaşa göndərilməni və ya müvəqqəti yükləmə linkini seçə bilərsiniz. Böyük fayllar avtomatik olaraq müvəqqəti linklə təqdim edilir.\n\nYalnız ictimai video paylaşımları dəstəklənir. Şəxsi hesablar, giriş tələb edən məzmun, şəkil paylaşımları və karusellər dəstəklənmir.\n\nƏmrlər:\n\n/start — Xoş gəldiniz mesajını göstər\n/download — Linkdən video yüklə\n/feedback — Rəy və ya təklif göndər\n/support — Botun inkişafına dəstək ol\n\nSürətli və rahat yükləmələr! 🚀",
+        "welcome": "🎬 İctimai video linkini göndərin.\n\nVideo, MP3, transkripsiya və ya xülasə seçin. Kiçik fayllar Telegram-la, böyük fayllar müvəqqəti linklə verilir.\n\nYouTube · TikTok · Instagram · Facebook · X · LinkedIn",
         "support": "Bu bot vaxtınıza qənaət edirsə, hosting xərclərini dəstəkləyə bilərsiniz.\n\nİanələr tamamilə könüllüdür və bot hər kəs üçün pulsuz olaraq qalır. ☕",
         "support_unconfigured": "Dəstək hələ konfiqurasiya edilməyib, lakin bot pulsuz olaraq qalır.",
         "feedback_usage": "Botu yaxşılaşdırmağa kömək etdiyiniz üçün təşəkkürlər! Rəyinizi belə göndərin:\n\n/feedback Rəyiniz burada",
@@ -73,6 +73,12 @@ _TEXT["az"].update({
     "duration": "Müddət",
     "video_only": "Bu, şəkil və ya karusel paylaşımıdır. Bot yalnız video və audio yükləyir. Ayrı video linki göndərin.",
     "download_file": "⬇️ Faylı yüklə",
+    "recommended_720": "▶️ 720p · tövsiyə edilir",
+    "video_options": "🎞 Digər video",
+    "audio_options": "🎧 Digər MP3",
+    "back_to_formats": "‹ Geri",
+    "choose_video_quality": "🎞 Video keyfiyyətini seçin:",
+    "choose_audio_quality": "🎧 MP3 keyfiyyətini seçin:",
 })
 
 _TEXT["en"].update({"format_label": "Format", "size_label": "Size"})
