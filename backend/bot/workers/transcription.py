@@ -26,6 +26,7 @@ from ..integrations.r2_cleanup import schedule_object_delete
 from ..services.downloader import DownloaderConfig, download
 from ..services import storage
 from ..telegram.status import active_job_status_text
+from ..telegram.summary import send_summary
 
 
 LOG = logging.getLogger("downloader_bot.transcription_worker")
@@ -184,7 +185,7 @@ async def _deliver_summary(job: dict[str, Any], summary: str, transcript: str, t
                     await bot.delete_message(chat_id=job["chat_id"], message_id=job["status_message_id"])
                 except Exception:
                     LOG.debug("event=transcription_status_delete_skipped job_id=%s", job["id"], exc_info=True)
-            await bot.send_message(chat_id=job["chat_id"], text=summary[:4096])
+            await send_summary(bot, job["chat_id"], summary)
             with artifact.open("rb") as document:
                 await bot.send_document(
                     chat_id=job["chat_id"], document=document, filename=filename,
