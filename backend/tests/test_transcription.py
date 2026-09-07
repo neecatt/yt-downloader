@@ -115,6 +115,14 @@ class TranscriptionTests(unittest.TestCase):
         self.assertIn("Do not turn advertisements", prompt)
         self.assertIn("If the usable speech is sparse", prompt)
 
+    def test_delivery_caption_uses_detected_speech_language(self):
+        from backend.bot.telegram.status import transcription_ready_caption
+
+        caption = transcription_ready_caption("en", "tr")
+
+        self.assertIn("detected language: tr", caption)
+        self.assertNotIn("detected language: en", caption)
+
     def test_queue_requires_private_redis_url(self):
         try:
             from backend.bot.queue import queue_is_configured

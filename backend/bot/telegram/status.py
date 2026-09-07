@@ -8,6 +8,11 @@ from typing import Any
 from ..i18n import tr
 
 
+def transcription_ready_caption(ui_language: str, detected_language: str) -> str:
+    """Localize delivery text without confusing UI and detected languages."""
+    return tr(ui_language, "transcription_ready", detected_language=detected_language or "unknown")
+
+
 def retry_status_text(job: dict[str, Any], delay_seconds: int) -> str:
     language = job["language"]
     values = {"attempt": max(1, int(job.get("attempts") or 1))}
