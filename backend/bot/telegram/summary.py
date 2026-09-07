@@ -17,10 +17,32 @@ _HEADINGS = {
     "video overview": "🎬 Video overview",
     "key points": "🔑 Key takeaways",
     "key takeaways": "🔑 Key takeaways",
-    "why it matters": "💡 Why it matters",
-    "action items": "✅ Next steps",
-    "next steps": "✅ Next steps",
 }
+_OMITTED_HEADINGS = {"why it matters", "action items", "next steps"}
+
+
+def _heading(line: str) -> str:
+    return line.strip().lstrip("#").strip().strip("*").strip().rstrip(":").strip().lower()
+
+
+def _requested_sections_only(text: str) -> str:
+    """Drop unwanted generated sections while preserving legacy unstructured text."""
+    lines = text.split("\n")
+    has_known_heading = any(_heading(line) in {*_HEADINGS, *_OMITTED_HEADINGS} for line in lines)
+    if not has_known_heading:
+        return text
+    kept: list[str] = []
+    include = True
+    for line in lines:
+        heading = _heading(line)
+        if heading in _HEADINGS:
+            include = True
+        elif heading in _OMITTED_HEADINGS:
+            include = False
+            continue
+        if include:
+            kept.append(line)
+    return "\n".join(kept).strip()
 
 
 def _video_wording(text: str) -> str:
@@ -47,7 +69,7 @@ def _format_line(line: str) -> str:
     stripped = line.strip()
     if not stripped:
         return ""
-    heading = stripped.lstrip("#").strip().strip("*").strip().rstrip(":").strip().lower()
+    heading = _heading(stripped)
     if heading in _HEADINGS:
         return f"<b>{html.escape(_HEADINGS[heading])}</b>"
     if stripped.startswith(("- ", "* ")):
@@ -58,7 +80,7 @@ def _format_line(line: str) -> str:
 def telegram_summary_chunks(summary: str, *, max_length: int = 4000) -> list[str]:
     """Convert limited Markdown to escaped Telegram HTML without broken tags."""
     max_length = max(256, min(4000, max_length))
-    normalized = _video_wording(summary).replace("\r\n", "\n").replace("\r", "\n").strip()
+    normalized = _requested_sections_only(_video_wording(summary).replace("\r\n", "\n").replace("\r", "\n").strip())
     if not normalized:
         return []
     rendered_lines: list[str] = []

@@ -29,6 +29,28 @@ The transcript discusses <new> AI & safety.
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 500 for chunk in chunks))
 
+    def test_only_overview_and_key_takeaways_are_delivered(self):
+        summary = """**Video overview**
+Useful overview.
+
+**Why it matters**
+This section must not be sent.
+
+**Key takeaways**
+- Useful fact.
+
+**Next steps**
+- This must not be sent either.
+"""
+        rendered = "\n".join(telegram_summary_chunks(summary))
+
+        self.assertIn("Video overview", rendered)
+        self.assertIn("Key takeaways", rendered)
+        self.assertIn("Useful fact", rendered)
+        self.assertNotIn("Why it matters", rendered)
+        self.assertNotIn("must not be sent", rendered)
+        self.assertNotIn("Next steps", rendered)
+
     async def test_delivery_enables_telegram_html(self):
         class Bot:
             def __init__(self):

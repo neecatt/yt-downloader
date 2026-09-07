@@ -92,9 +92,7 @@ def _summarize_text(text: str, language: str) -> str:
             "Make the result useful to a busy viewer and use exactly these Markdown sections:\n"
             "**Video overview** — 2-3 direct sentences about what the video says.\n"
             "**Key takeaways** — 3-7 specific bullets, preserving names, numbers, qualifications, and uncertainty.\n"
-            "**Why it matters** — practical relevance to the viewer, but only when supported by the speech.\n"
-            "Add **Next steps** only when the speaker explicitly assigns, promises, or requests concrete tasks; otherwise omit it. "
-            "Do not turn advertisements, sponsor messages, sales pitches, or generic recommendations into next steps. "
+            "Do not add any other sections, including Why it matters, Next steps, or Action items. "
             "If the usable speech is sparse or unclear, say so briefly instead of extrapolating.\n\n"
             f"VIDEO SPEECH:\n{text}"
         )},
