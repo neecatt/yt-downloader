@@ -25,7 +25,7 @@ from ..integrations.cookies import prepare_cookie_file
 from ..integrations.r2_cleanup import schedule_object_delete
 from ..services.downloader import DownloaderConfig, download
 from ..services import storage
-from ..telegram.status import active_job_status_text
+from ..telegram.status import active_job_status_text, transcription_ready_caption
 from ..telegram.summary import send_summary
 
 
@@ -142,7 +142,7 @@ async def _refresh_queue_statuses() -> None:
             )
 
 
-async def _deliver(job: dict[str, Any], transcript: str, title: str, language: str) -> None:
+async def _deliver(job: dict[str, Any], transcript: str, title: str, ui_language: str, detected_language: str) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise RuntimeError("Telegram bot token is not configured")
@@ -162,7 +162,7 @@ async def _deliver(job: dict[str, Any], transcript: str, title: str, language: s
                     chat_id=job["chat_id"],
                     document=document,
                     filename=filename,
-                    caption=tr(language, "transcription_ready", detected_language=language),
+                    caption=transcription_ready_caption(ui_language, detected_language),
                     read_timeout=120,
                     write_timeout=120,
                 )
@@ -170,7 +170,7 @@ async def _deliver(job: dict[str, Any], transcript: str, title: str, language: s
         shutil.rmtree(directory, ignore_errors=True)
 
 
-async def _deliver_summary(job: dict[str, Any], summary: str, transcript: str, title: str, language: str) -> None:
+async def _deliver_summary(job: dict[str, Any], summary: str, transcript: str, title: str, ui_language: str, detected_language: str) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise RuntimeError("Telegram bot token is not configured")
@@ -189,7 +189,7 @@ async def _deliver_summary(job: dict[str, Any], summary: str, transcript: str, t
             with artifact.open("rb") as document:
                 await bot.send_document(
                     chat_id=job["chat_id"], document=document, filename=filename,
-                    caption=tr(language, "transcription_ready", detected_language=language),
+                    caption=transcription_ready_caption(ui_language, detected_language),
                     read_timeout=120, write_timeout=120,
                 )
     finally:
@@ -237,13 +237,14 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
             summarize=is_summary, summary_language=language,
         )
         transcript = format_transcript(result)
+        detected_language = str(result.get("language") or "unknown")
         if is_summary:
             summary = result.get("summary")
             if not summary:
                 raise RuntimeError("The summarization service returned an empty summary")
-            asyncio.run(_deliver_summary(job, summary, transcript, str(result.get("title") or "Transcript"), language))
+            asyncio.run(_deliver_summary(job, summary, transcript, str(result.get("title") or "Transcript"), language, detected_language))
         else:
-            asyncio.run(_deliver(job, transcript, str(result.get("title") or "Transcript"), language))
+            asyncio.run(_deliver(job, transcript, str(result.get("title") or "Transcript"), language, detected_language))
         activity_store.update_transcription_job(
             job_id, status="completed", processing_duration_seconds=time.perf_counter() - started,
         )

@@ -7,6 +7,85 @@ from backend.bot.persistence import activity_store
 
 
 class ActivityStoreSafetyTests(unittest.TestCase):
+    def test_conversation_query_excludes_hidden_chats(self):
+        class Result:
+            def fetchall(self):
+                return []
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, query, values):
+                self.query = query
+                self.values = values
+                return Result()
+
+        connection = Connection()
+        with patch.object(activity_store, "enabled", return_value=True), \
+             patch.object(activity_store, "_connect", return_value=connection):
+            activity_store.query_conversations()
+
+        self.assertIn("c.admin_hidden_at IS NULL", connection.query)
+
+    def test_hiding_conversation_preserves_rows(self):
+        class Cursor:
+            rowcount = 1
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, query, values):
+                self.query = query
+                self.values = values
+                return Cursor()
+
+        connection = Connection()
+        with patch.object(activity_store, "enabled", return_value=True), \
+             patch.object(activity_store, "_connect", return_value=connection):
+            hidden = activity_store.hide_conversation(123)
+
+        self.assertTrue(hidden)
+        self.assertTrue(connection.query.startswith("UPDATE bot_contacts"))
+        self.assertNotIn("DELETE", connection.query)
+        self.assertEqual(connection.values[-1], 123)
+
+    def test_inbound_message_restores_hidden_conversation(self):
+        class Cursor:
+            rowcount = 1
+
+        class Connection:
+            def __init__(self):
+                self.queries = []
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, query, values):
+                self.queries.append((query, values))
+                return Cursor()
+
+        connection = Connection()
+        with patch.object(activity_store, "enabled", return_value=True), \
+             patch.object(activity_store, "_connect", return_value=connection):
+            activity_store.record_message(
+                chat_id=123, username="user", display_name="User",
+                direction="inbound", text="Hello",
+            )
+
+        self.assertEqual(len(connection.queries), 2)
+        self.assertIn("SET admin_hidden_at = NULL", connection.queries[1][0])
+
     def test_replacement_status_message_is_attached_only_to_active_job(self):
         class Cursor:
             rowcount = 1

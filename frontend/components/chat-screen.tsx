@@ -18,6 +18,7 @@ export function ChatScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
+  const [removing, setRemoving] = useState<number | null>(null);
 
   const refreshConversations = useCallback(async () => {
     const response = await fetch(`/api/chats?q=${encodeURIComponent(query)}`, { cache: "no-store" });
@@ -25,7 +26,7 @@ export function ChatScreen() {
     if (!response.ok) throw new Error("Could not load conversations");
     const data = await response.json() as { conversations: Conversation[] };
     setConversations(data.conversations);
-    setSelected((current) => current ?? data.conversations[0]?.chatId ?? null);
+    setSelected((current) => data.conversations.some((item) => item.chatId === current) ? current : data.conversations[0]?.chatId ?? null);
     setLoading(false);
   }, [query]);
 
@@ -68,6 +69,27 @@ export function ChatScreen() {
     setSending(false);
   }
 
+  async function remove(chatId: number, name: string) {
+    const confirmed = window.confirm(
+      `Remove ${name} from Chats?\n\nMessage history will be kept, and the chat will return if the user messages the bot again.`,
+    );
+    if (!confirmed) return;
+    setRemoving(chatId); setError("");
+    try {
+      const response = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { method: "DELETE" });
+      if (response.status === 401) { window.location.href = "/login"; return; }
+      if (!response.ok) throw new Error("Could not remove conversation");
+      const remaining = conversations.filter((item) => item.chatId !== chatId);
+      setConversations(remaining);
+      setSelected((current) => current === chatId ? remaining[0]?.chatId ?? null : current);
+      if (selected === chatId) setMessages([]);
+    } catch {
+      setError("Could not remove this conversation.");
+    } finally {
+      setRemoving(null);
+    }
+  }
+
   return <AdminLayout><main className="dashboard-shell chat-shell">
     <header className="topbar"><div><p className="eyebrow">Bot messaging</p><h1>Chats</h1><p className="page-intro">Reply to people who have contacted the bot.</p></div></header>
     <section className="chat-layout panel">
@@ -75,14 +97,20 @@ export function ChatScreen() {
         <div className="chat-search"><input aria-label="Search chats" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search chats…" /></div>
         {loading && <p className="chat-empty">Loading chats…</p>}
         {!loading && !conversations.length && <p className="chat-empty">No conversations yet.</p>}
-        {conversations.map((conversation) => <button key={conversation.chatId} className={`conversation-item${selected === conversation.chatId ? " active" : ""}`} onClick={() => setSelected(conversation.chatId)}>
-          <span className="conversation-top"><strong>{conversation.username || conversation.displayName || "Unnamed user"}</strong>{conversation.unreadCount > 0 && <b>{conversation.unreadCount}</b>}</span>
-          <span className="muted">{conversation.lastText || "No messages"}</span><small>{when(conversation.lastMessageAt)}</small>
-        </button>)}
+        {conversations.map((conversation) => {
+          const name = conversation.username || conversation.displayName || "Unnamed user";
+          return <div key={conversation.chatId} className={`conversation-item${selected === conversation.chatId ? " active" : ""}`}>
+            <button className="conversation-select" onClick={() => setSelected(conversation.chatId)}>
+              <span className="conversation-top"><strong>{name}</strong>{conversation.unreadCount > 0 && <b>{conversation.unreadCount}</b>}</span>
+              <span className="muted">{conversation.lastText || "No messages"}</span><small>{when(conversation.lastMessageAt)}</small>
+            </button>
+            <button className="conversation-remove" type="button" aria-label={`Remove chat with ${name}`} title="Remove from Chats" disabled={removing === conversation.chatId} onClick={() => remove(conversation.chatId, name)}>×</button>
+          </div>;
+        })}
       </aside>
       <div className="chat-panel">
         {current ? <>
-          <header className="chat-header"><div><strong>{current.username || current.displayName || "Unnamed user"}</strong><span>{current.displayName && current.username ? current.displayName : "Private bot chat"}</span></div><small>{when(current.lastMessageAt)}</small></header>
+          <header className="chat-header"><div><strong>{current.username || current.displayName || "Unnamed user"}</strong><span>{current.displayName && current.username ? current.displayName : "Private bot chat"}</span></div><div className="chat-header-actions"><small>{when(current.lastMessageAt)}</small><button className="button ghost small-button" type="button" disabled={removing === current.chatId} onClick={() => remove(current.chatId, current.username || current.displayName || "this chat")}>{removing === current.chatId ? "Removing…" : "Remove chat"}</button></div></header>
           <div className="chat-messages">{messages.map((message) => <div key={message.id} className={`chat-bubble ${message.direction}`}><p>{message.text}</p><small>{when(message.createdAt)}{!message.delivered && " · failed"}</small></div>)}</div>
           <form className="chat-compose" onSubmit={send}><textarea value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Write a reply…" maxLength={4096} rows={2} /><button className="button" type="submit" disabled={sending || !draft.trim()}>{sending ? "Sending…" : "Send"}</button></form>
         </> : <div className="chat-empty large">Select a conversation to view messages.</div>}
