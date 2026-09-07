@@ -250,6 +250,19 @@ def create_app() -> FastAPI:
         activity_store.mark_conversation_read(chat_id)
         return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
 
+    @app.delete("/admin/conversations/{chat_id}")
+    async def remove_conversation(chat_id: int, request: Request, authorization: str | None = Header(default=None)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        try:
+            hidden = activity_store.hide_conversation(chat_id)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Chat database unavailable") from None
+        if not hidden:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return JSONResponse({"removed": True}, headers={"Cache-Control": "no-store"})
+
     @app.post("/admin/conversations/{chat_id}/messages")
     async def reply_to_conversation(chat_id: int, request: Request, payload: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)) -> JSONResponse:
         _rate_limit(request)

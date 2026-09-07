@@ -85,6 +85,7 @@ def initialize() -> None:
             """)
             connection.execute("ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS admin_read_at TIMESTAMPTZ")
             connection.execute("ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS language_code TEXT")
+            connection.execute("ALTER TABLE bot_contacts ADD COLUMN IF NOT EXISTS admin_hidden_at TIMESTAMPTZ")
             connection.execute("""
             CREATE TABLE IF NOT EXISTS transcription_jobs (
                 id TEXT PRIMARY KEY,
@@ -440,6 +441,11 @@ def record_message(*, chat_id: int, username: str | None, display_name: str | No
                 "INSERT INTO bot_messages (id, telegram_chat_id, telegram_username, telegram_display_name, direction, text, telegram_message_id, delivered, error, created_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (message_id, chat_id, username, display_name, direction, text[:4096], telegram_message_id, delivered, error[:1000] if error else None, now),
             )
+            if direction == "inbound":
+                connection.execute(
+                    "UPDATE bot_contacts SET admin_hidden_at = NULL, updated_at = %s WHERE chat_id = %s",
+                    (now, chat_id),
+                )
         return message_id
     except Exception:
         LOG.warning("Could not record chat message", exc_info=True)
@@ -515,7 +521,7 @@ def query_conversations(*, q: str | None = None, limit: int = 50) -> list[dict[s
     if not enabled():
         return []
     limit = min(100, max(1, limit))
-    clauses: list[str] = []
+    clauses: list[str] = ["c.admin_hidden_at IS NULL"]
     values: list[Any] = []
     if q:
         needle = f"%{q[:100]}%"
@@ -578,6 +584,18 @@ def mark_conversation_read(chat_id: int) -> None:
             connection.execute("UPDATE bot_contacts SET admin_read_at = %s WHERE chat_id = %s", (datetime.now(timezone.utc), chat_id))
     except Exception:
         LOG.warning("Could not mark conversation read", exc_info=True)
+
+
+def hide_conversation(chat_id: int) -> bool:
+    """Hide a conversation from the admin inbox without deleting its history."""
+    if not enabled() or not isinstance(chat_id, int) or chat_id == 0:
+        return False
+    with _lock, _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE bot_contacts SET admin_hidden_at = %s WHERE chat_id = %s AND admin_hidden_at IS NULL",
+            (datetime.now(timezone.utc), chat_id),
+        )
+        return cursor.rowcount > 0
 
 
 def update_event(event_id: str | None, *, status: str, fmt: str | None = None, delivery: str | None = None, size_bytes: int | None = None, duration_ms: int | None = None, title: str | None = None, error: str | None = None, action: str | None = None) -> None:

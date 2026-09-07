@@ -52,6 +52,13 @@ export async function markConversationRead(chatId: number) {
   if (!response.ok) throw new Error(`Chat API returned ${response.status}`);
 }
 
+export async function removeConversation(chatId: number) {
+  const response = await fetch(apiUrl(`/admin/conversations/${encodeURIComponent(chatId)}`), {
+    method: "DELETE", headers: headers(), cache: "no-store", signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) throw new Error(`Chat API returned ${response.status}`);
+}
+
 export async function replyToConversation(chatId: number, message: string) {
   const response = await fetch(apiUrl(`/admin/conversations/${encodeURIComponent(chatId)}/messages`), {
     method: "POST", headers: { ...headers(), "Content-Type": "application/json" },

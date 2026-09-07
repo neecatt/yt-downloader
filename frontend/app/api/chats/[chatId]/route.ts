@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchMessages, replyToConversation } from "@/lib/chats";
+import { fetchMessages, removeConversation, replyToConversation } from "@/lib/chats";
 import { hasValidSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -29,5 +29,17 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json(await replyToConversation(id, body.message), { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not send message" }, { status: 502 });
+  }
+}
+
+export async function DELETE(_request: NextRequest, { params }: { params: Promise<{ chatId: string }> }) {
+  if (!(await hasValidSession())) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const id = await chatId(params);
+  if (id === null) return NextResponse.json({ error: "Invalid chat" }, { status: 400 });
+  try {
+    await removeConversation(id);
+    return NextResponse.json({ removed: true }, { headers: { "Cache-Control": "no-store" } });
+  } catch {
+    return NextResponse.json({ error: "Could not remove conversation" }, { status: 502 });
   }
 }
