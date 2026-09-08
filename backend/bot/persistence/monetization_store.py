@@ -271,7 +271,7 @@ def initialize() -> None:
                 (id,enabled,starter_credits,ai_credit_cost,daily_download_limit,ai_trials,referral_inviter_reward,referral_invitee_reward,
                  referral_required_downloads,referral_monthly_cap,premium_price_stars,stale_reservation_seconds,
                  cost_alert_file_mb,rollout_percent,rollout_user_ids,updated_at,updated_by,premium_enabled)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO NOTHING
             """, _settings_row(settings.monetization))
             connection.execute("""
@@ -397,8 +397,9 @@ def initialize() -> None:
                 SELECT MD5(telegram_user_id::text || RANDOM()::text),telegram_user_id,%s,credit_balance,'starter_grant',NULL,'system',created_at
                 FROM user_accounts ON CONFLICT DO NOTHING
             """, (settings.monetization.starter_credits,))
-    except Exception:
+    except Exception as exc:
         LOG.exception("event=monetization_database_initialization_failed")
+        raise RuntimeError("Monetization database initialization failed") from exc
 
 
 def ensure_account(*, user_id: int, chat_id: int | None, username: str | None, display_name: str | None) -> dict[str, Any] | None:
