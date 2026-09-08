@@ -923,14 +923,15 @@ def admin_transactions(*, q: str | None, page: int, page_size: int) -> dict[str,
         return {"transactions": [], "page": page, "pageSize": page_size, "total": 0}
     clauses, values = [], []
     if q:
-        clauses.append("(telegram_user_id::text=%s OR reason ILIKE %s OR actor ILIKE %s)")
-        values.extend([q, f"%{q}%", f"%{q}%"])
+        clauses.append("(l.telegram_user_id::text=%s OR u.telegram_username ILIKE %s OR u.telegram_display_name ILIKE %s OR l.reason ILIKE %s OR l.actor ILIKE %s)")
+        values.extend([q, f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"])
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     offset = (page - 1) * page_size
     with _connect() as connection:
-        total = int(connection.execute(f"SELECT COUNT(*) FROM credit_ledger {where}", values).fetchone()[0])
+        total = int(connection.execute(f"SELECT COUNT(*) FROM credit_ledger l LEFT JOIN user_accounts u ON u.telegram_user_id=l.telegram_user_id {where}", values).fetchone()[0])
         rows = connection.execute(f"""
-          SELECT id,telegram_user_id,delta,balance_after,reason,operation_id,actor,created_at
-          FROM credit_ledger {where} ORDER BY created_at DESC LIMIT %s OFFSET %s
+          SELECT l.id,l.telegram_user_id,u.telegram_username,u.telegram_display_name,l.delta,l.balance_after,l.reason,l.operation_id,l.actor,l.created_at
+          FROM credit_ledger l LEFT JOIN user_accounts u ON u.telegram_user_id=l.telegram_user_id {where}
+          ORDER BY l.created_at DESC LIMIT %s OFFSET %s
         """, (*values, page_size, offset)).fetchall()
-    return {"transactions": [{"id": r[0], "userId": int(r[1]), "delta": int(r[2]), "balanceAfter": int(r[3]), "reason": r[4], "operationId": r[5], "actor": r[6], "createdAt": r[7].isoformat()} for r in rows], "page": page, "pageSize": page_size, "total": total}
+    return {"transactions": [{"id": r[0], "userId": int(r[1]), "username": r[2], "displayName": r[3], "delta": int(r[4]), "balanceAfter": int(r[5]), "reason": r[6], "operationId": r[7], "actor": r[8], "createdAt": r[9].isoformat()} for r in rows], "page": page, "pageSize": page_size, "total": total}

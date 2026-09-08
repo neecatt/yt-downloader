@@ -25,6 +25,11 @@ const defaults: MonetizationSettings = {
 
 type NumericSetting = Exclude<keyof MonetizationSettings, "enabled" | "premiumEnabled" | "rolloutUserIds" | "emergencyDisabled">;
 
+function changedSummary(changed: Record<string, unknown>) {
+  const entries = Object.entries(changed).slice(0, 3).map(([key, value]) => `${key.replace(/[A-Z]/g, (letter) => ` ${letter.toLowerCase()}`)}: ${String(value)}`);
+  return entries.join(" · ") || "Settings updated";
+}
+
 export function SettingsScreen() {
   const [value, setValue] = useState(defaults);
   const [reason, setReason] = useState("");
@@ -108,6 +113,6 @@ export function SettingsScreen() {
         <div className="composer-actions"><span className="muted">Changes apply to new decisions immediately.</span><button className="button" disabled={saving}>{saving ? "Saving…" : "Save settings"}</button></div>
       </form>}
     </section>
-    <section className="panel user-manager"><h2>Settings history</h2><div className="history-list">{history.map((item, index) => <article key={`${item.createdAt}-${index}`}><strong>{new Date(item.createdAt).toLocaleString()}</strong><span>{item.reason}<small className="muted">{JSON.stringify(item.changed)}</small></span><small>{item.actor}</small></article>)}{!history.length && <p className="muted">No changes recorded yet.</p>}</div></section>
+    <section className="panel user-manager"><h2>Settings history</h2><div className="history-list">{history.map((item, index) => <article key={`${item.createdAt}-${index}`}><strong>{new Date(item.createdAt).toLocaleString()}</strong><span><span className="history-reason">{item.reason}</span><small className="history-change">{changedSummary(item.changed)}</small></span><small>{item.actor}</small></article>)}{!history.length && <p className="muted">No changes recorded yet.</p>}</div></section>
   </main></AdminLayout>;
 }
