@@ -143,6 +143,14 @@ class R2CleanupTests(unittest.TestCase):
 
 
 class LimiterTests(unittest.TestCase):
+    def test_download_daily_limit_comes_from_dynamic_monetization_settings(self):
+        configured = replace(bot.settings.monetization, daily_download_limit=15)
+        with patch.object(bot, "DOWNLOAD_LIMITER") as limiter, patch.object(bot.monetization_store, "monetization_settings", return_value=configured):
+            limiter.allow.return_value = True
+            self.assertTrue(bot.allow_download(42))
+        self.assertEqual(limiter.allow.call_args_list[1].kwargs["limit"], 15)
+        self.assertEqual(limiter.allow.call_args_list[1].kwargs["window_seconds"], 86400)
+
     def test_sliding_window_blocks_until_window_expires(self):
         limiter = SlidingWindowLimiter()
         self.assertTrue(limiter.allow("user", limit=2, window_seconds=60, now=100))
@@ -368,8 +376,8 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         update, message = update_for()
         await bot.start(update, SimpleNamespace())
         self.assertIn("YouTube", message.replies[0][0])
-        self.assertIn("Send me a public video link", message.replies[0][0])
-        self.assertIn("/help", message.replies[0][0])
+        self.assertIn("Download videos and get AI-powered transcriptions", message.replies[0][0])
+        self.assertNotIn("Use /help", message.replies[0][0])
 
     async def test_start_shows_support_button_when_configured(self):
         update, message = update_for()
@@ -388,7 +396,7 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         update.callback_query = query
         with patch.object(bot, "activity_store", create=True):
             await bot.language_button_handler(update, SimpleNamespace(), "ru")
-        self.assertIn("Отправьте публичную ссылку", query.edited[0])
+        self.assertIn("Добро пожаловать", query.edited[0])
 
     async def test_settings_command_shows_language_buttons(self):
         update, message = update_for()

@@ -14,10 +14,33 @@ from telegram.error import BadRequest, TelegramError
 from .commands import _app
 
 
+async def _settle_and_notify(context: Any, operation_id: str | None, *, size_bytes: int | None = None, duration_ms: int | None = None) -> None:
+    app = _app()
+    try:
+        result = app.settle_entitlement(operation_id, size_bytes=size_bytes, duration_ms=duration_ms)
+    except Exception:
+        # The media is already in the user's hands. Keep the activity marked
+        # completed and let the reconciliation loop settle accounting later.
+        app.LOG.exception("event=entitlement_settlement_deferred operation_id=%s", operation_id)
+        return
+    reward = result.get("referral_reward") if result else None
+    if not reward:
+        return
+    for user_id, credits in ((reward["inviter_user_id"], reward["inviter_credits"]),
+                             (reward["invitee_user_id"], reward["invitee_credits"])):
+        try:
+            await context.bot.send_message(chat_id=user_id, text=app.tr(app.chat_language(user_id), "referral_rewarded", credits=credits))
+        except Exception:
+            app.LOG.warning("event=referral_reward_notification_failed user_id=%s", user_id, exc_info=True)
+
+
 async def pending_delivery(update: Any, context: Any, mode: str, key: str) -> None:
     app = _app()
     query = update.callback_query
     language = app.language_for_update(update)
+    if mode not in {"telegram", "r2"}:
+        await query.edit_message_text(app.tr(language, "invalid_button"))
+        return
     if mode == "r2" and not app.r2_is_configured():
         await query.edit_message_text(app.tr(language, "link_unconfigured"))
         return
@@ -47,12 +70,15 @@ async def pending_delivery(update: Any, context: Any, mode: str, key: str) -> No
                     app.mark_support_prompt_shown(pending.chat_id, pending.user_id)
                 delivery = "r2"
             app._update_activity(pending.activity_id, status="completed", fmt=pending.fmt, delivery=delivery, size_bytes=pending.size_bytes, duration_ms=int(pending.info.get("duration", 0) * 1000) if pending.info.get("duration") else None, title=pending.info.get("title"))
+            await _settle_and_notify(context, pending.entitlement_operation_id, size_bytes=pending.size_bytes, duration_ms=int(pending.info.get("duration", 0) * 1000) if pending.info.get("duration") else None)
             await query.delete_message()
     except (TelegramError, BadRequest):
+        app.release_entitlement(pending.entitlement_operation_id, "telegram_delivery_failed")
         app.LOG.exception("Pending delivery failed for chat %s", pending.chat_id)
         app._update_activity(pending.activity_id, status="failed", error="Telegram could not accept the file")
         await query.edit_message_text(app.tr(language, "telegram_failed_other"))
     except Exception as exc:
+        app.release_entitlement(pending.entitlement_operation_id, "delivery_failed")
         app.LOG.info("pending delivery failed: %s", app.safe_log_error(exc))
         app._update_activity(pending.activity_id, status="failed", error=app.display_error(exc, language))
         await query.edit_message_text(f"❌ {app.display_error(exc, language)}")
@@ -68,6 +94,9 @@ async def handle(update: Any, context: Any) -> None:
     data = query.data if isinstance(query.data, str) else ""
     if data.startswith("lang|"):
         await app.language_button_handler(update, context, data.split("|", 1)[1])
+        return
+    if data.startswith("acct|"):
+        await app.monetization.handle_callback(update, context, data.split("|", 1)[1])
         return
     if data.startswith(("t|", "s|")):
         job_type = "summary" if data.startswith("s|") else "transcript"
@@ -89,8 +118,12 @@ async def handle(update: Any, context: Any) -> None:
         if not app.allow_analysis(state.user_id):
             await query.edit_message_text(app.tr(language, "analysis_limit"))
             return
+        operation = app.reserve_entitlement(update, "ai", f"ai:{job_type}:{key}", state.activity_id)
+        if not operation:
+            await query.edit_message_text(app.tr(language, "need_credits", cost=app.monetization_settings().ai_credit_cost), reply_markup=app.access_keyboard(language, key))
+            return
         app._update_activity(state.activity_id, status="started", action=job_type)
-        await app._run_transcription(update, query, state.url, language, activity_id=state.activity_id, job_type=job_type)
+        await app._run_transcription(update, query, state.url, language, activity_id=state.activity_id, job_type=job_type, entitlement_operation_id=operation.id)
         app.STATES.pop(key, None)
         return
     try:
@@ -139,12 +172,19 @@ async def handle(update: Any, context: Any) -> None:
         if not app.allow_download(state.user_id):
             await query.edit_message_text(app.tr(language, "download_limit"))
             return
+        operation = app.reserve_entitlement(update, "download", f"download:{key}", state.activity_id)
+        if not operation:
+            await query.edit_message_text(app.tr(language, "account_unavailable"), reply_markup=app.access_keyboard(language, key))
+            return
         await query.edit_message_text(app.tr(language, "downloading", fmt=value))
         await context.bot.send_chat_action(chat_id=state.chat_id, action=app.ChatAction.UPLOAD_DOCUMENT)
         directory = Path(tempfile.mkdtemp(prefix="ytbot-"))
         keep_pending = False
         try:
-            info, filename, extension = await app.run_download_with_progress(asyncio.get_running_loop(), state.url, value, str(directory), query, language)
+            info, filename, extension = await app.run_download_with_progress(
+                asyncio.get_running_loop(), state.url, value, str(directory), query,
+                language, operation.id,
+            )
             size = filename.stat().st_size
             if app.DELIVERY_MODE == "r2" or (app.DELIVERY_MODE == "auto" and size > app.MAX_UPLOAD_BYTES and app.r2_is_configured()):
                 await query.edit_message_text(app.tr(language, "upload_cloud"))
@@ -155,7 +195,7 @@ async def handle(update: Any, context: Any) -> None:
                     app.mark_support_prompt_shown(state.chat_id, state.user_id)
                 delivery = "r2"
             elif app.DELIVERY_MODE == "auto" and size <= app.MAX_UPLOAD_BYTES and app.r2_is_configured():
-                pending_key = app.save_pending_delivery(filename=filename, directory=directory, update=update, info=info, extension=extension, fmt=value, size_bytes=size, activity_id=state.activity_id)
+                pending_key = app.save_pending_delivery(filename=filename, directory=directory, update=update, info=info, extension=extension, fmt=value, size_bytes=size, activity_id=state.activity_id, entitlement_operation_id=operation.id)
                 keep_pending = True
                 await query.edit_message_text(app.tr(language, "ready_choice", title=info.get("title", "Downloaded file")[:700], size=size / 1024 / 1024), reply_markup=app.delivery_choice_keyboard(pending_key, language))
                 return
@@ -169,12 +209,15 @@ async def handle(update: Any, context: Any) -> None:
             else:
                 raise ValueError("The file exceeds Telegram's upload limit and cloud delivery is not configured")
             app._update_activity(state.activity_id, status="completed", fmt=value, delivery=delivery, size_bytes=size, duration_ms=int(info.get("duration", 0) * 1000) if info.get("duration") else None, title=info.get("title"))
+            await _settle_and_notify(context, operation.id, size_bytes=size, duration_ms=int(info.get("duration", 0) * 1000) if info.get("duration") else None)
             await query.delete_message()
         except (TelegramError, BadRequest):
+            app.release_entitlement(operation.id, "telegram_delivery_failed")
             app.LOG.exception("Telegram upload failed for chat %s", state.chat_id)
             app._update_activity(state.activity_id, status="failed", error="Telegram could not accept the file")
             await query.edit_message_text(app.tr(language, "telegram_failed_quality"))
         except Exception as exc:
+            app.release_entitlement(operation.id, "download_or_delivery_failed")
             app.LOG.info("download failed for %s: %s", app.safe_log_url(state.url), app.safe_log_error(exc))
             app._update_activity(state.activity_id, status="failed", error=app.display_error(exc, language))
             await query.edit_message_text(f"❌ {app.display_error(exc, language)}")

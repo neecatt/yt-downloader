@@ -51,7 +51,7 @@ async def send_r2_link(context: Any, chat_id: int, url: str, info: dict[str, Any
     )
 
 
-async def download_with_progress(loop: Any, url: str, fmt: str, tmpdir: str, query: Any, language: str = "en") -> tuple[dict[str, Any], Path, str]:
+async def download_with_progress(loop: Any, url: str, fmt: str, tmpdir: str, query: Any, language: str = "en", entitlement_operation_id: str | None = None) -> tuple[dict[str, Any], Path, str]:
     """Run the blocking downloader while throttling Telegram progress edits."""
     app = _app()
     progress_queue: Any = __import__("asyncio").Queue()
@@ -61,13 +61,27 @@ async def download_with_progress(loop: Any, url: str, fmt: str, tmpdir: str, que
 
     download_task = loop.run_in_executor(app.EXECUTOR, app.download_sync, url, fmt, tmpdir, on_progress)
     last_update = 0.0
+    last_heartbeat = 0.0
     latest: dict[str, Any] | None = None
     while not download_task.done():
         try:
             latest = await __import__("asyncio").wait_for(progress_queue.get(), timeout=0.5)
         except __import__("asyncio").TimeoutError:
+            now = time.monotonic()
+            if entitlement_operation_id and now - last_heartbeat >= 30:
+                try:
+                    await __import__("asyncio").to_thread(app.touch_entitlement, entitlement_operation_id)
+                    last_heartbeat = now
+                except Exception:
+                    app.LOG.warning("Unable to refresh entitlement heartbeat", exc_info=True)
             continue
         now = time.monotonic()
+        if entitlement_operation_id and now - last_heartbeat >= 30:
+            try:
+                await __import__("asyncio").to_thread(app.touch_entitlement, entitlement_operation_id)
+                last_heartbeat = now
+            except Exception:
+                app.LOG.warning("Unable to refresh entitlement heartbeat", exc_info=True)
         if now - last_update >= 1.5 or latest.get("status") in {"finished", "started", "processing"}:
             try:
                 await query.edit_message_text(app.progress_text(latest, fmt, language))

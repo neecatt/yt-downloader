@@ -8,6 +8,7 @@ Telegram interaction layer.
 from __future__ import annotations
 
 import asyncio
+import secrets
 from typing import Any
 
 from telegram import Update
@@ -26,8 +27,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     app = _app()
     app._record_contact(update)
     language = app.language_for_update(update)
+    args = getattr(context, "args", None) or []
+    if args and args[0].startswith("ref_") and update.effective_user:
+        result = app.attach_referral(update.effective_user.id, args[0][4:])
+        if result == "attached":
+            await update.effective_message.reply_text(app.tr(
+                language, "referral_attached",
+                required=app.monetization_settings().referral_required_downloads,
+                reward=app.monetization_settings().referral_invitee_reward,
+            ))
     await update.effective_message.reply_text(
-        f"{app.tr(language, 'welcome')}\n\n{app.tr(language, 'help_hint')}\n{app.tr(language, 'settings_hint')}",
+        app.tr(language, "welcome"),
         reply_markup=app.start_keyboard(language),
     )
 
@@ -53,7 +63,7 @@ async def language_button(update: Update, context: ContextTypes.DEFAULT_TYPE, la
     app = _app()
     selected = app.update_chat_language(update.effective_chat.id, language)
     await update.callback_query.edit_message_text(
-        f"{app.tr(selected, 'welcome')}\n\n{app.tr(selected, 'help_hint')}\n{app.tr(selected, 'settings_hint')}",
+        app.tr(selected, "welcome"),
         reply_markup=app.start_keyboard(selected),
     )
 
@@ -91,7 +101,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     app = _app()
     app._record_contact(update)
     language = app.language_for_update(update)
-    await update.effective_message.reply_text(f"{app.tr(language, 'help')}\n\n{app.tr(language, 'transcription_help')}")
+    await update.effective_message.reply_text(f"{app.tr(language, 'help')}\n\n{app.tr(language, 'transcription_help')}\n\n{app.tr(language, 'account_help')}")
 
 
 def choice_prompt(language: str, title: str, duration: int | float | None) -> str:
@@ -168,9 +178,13 @@ async def _run_transcription_command(update: Update, context: ContextTypes.DEFAU
         await update.effective_message.reply_text(app.tr(language, "analysis_limit"))
         return
     status_key = "summarization_starting" if job_type == "summary" else "transcription_starting"
-    status = await update.effective_message.reply_text(app.tr(language, status_key))
     activity_id = app._create_activity_event(update, url, None, action=job_type)
-    await app._run_transcription(update, status, url, language, activity_id=activity_id, job_type=job_type)
+    operation = app.reserve_entitlement(update, "ai", f"ai:{activity_id or secrets.token_urlsafe(12)}", activity_id)
+    if not operation:
+        await update.effective_message.reply_text(app.tr(language, "need_credits", cost=app.monetization_settings().ai_credit_cost), reply_markup=app.access_keyboard(language))
+        return
+    status = await update.effective_message.reply_text(app.tr(language, status_key))
+    await app._run_transcription(update, status, url, language, activity_id=activity_id, job_type=job_type, entitlement_operation_id=operation.id)
 
 
 async def transcribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

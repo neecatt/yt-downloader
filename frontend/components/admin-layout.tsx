@@ -6,6 +6,11 @@ import { useState, type ReactNode } from "react";
 
 const navigation = [
   { href: "/", label: "Activity", detail: "Usage and logs" },
+  { href: "/usage", label: "Usage", detail: "Product intelligence" },
+  { href: "/credits", label: "Credits", detail: "Balances and referrals" },
+  { href: "/transactions", label: "Transactions", detail: "Credit audit trail" },
+  { href: "/users", label: "Users", detail: "Credits and access" },
+  { href: "/settings", label: "Settings", detail: "Monetization controls" },
   { href: "/broadcast", label: "Broadcast", detail: "Message everyone" },
   { href: "/message", label: "Message user", detail: "Contact one user" },
   { href: "/chats", label: "Chats", detail: "View and reply" },

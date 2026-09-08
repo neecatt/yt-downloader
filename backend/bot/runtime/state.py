@@ -31,6 +31,7 @@ class PendingDelivery:
     fmt: str
     size_bytes: int
     activity_id: str | None
+    entitlement_operation_id: str | None
     created_at: float
 
 

@@ -110,6 +110,7 @@ def initialize() -> None:
             connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS processing_duration_seconds DOUBLE PRECISION")
             connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ")
             connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS job_type TEXT NOT NULL DEFAULT 'transcript'")
+            connection.execute("ALTER TABLE transcription_jobs ADD COLUMN IF NOT EXISTS entitlement_operation_id TEXT")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_transcription_jobs_status_created ON transcription_jobs(status, created_at)")
             connection.execute("""
             CREATE TABLE IF NOT EXISTS bot_messages (
@@ -181,6 +182,7 @@ def create_transcription_job(
     language: str,
     status_message_id: int | None,
     job_type: str = "transcript",
+    entitlement_operation_id: str | None = None,
 ) -> str | None:
     """Persist a queue payload; Celery receives only this opaque ID."""
     if not enabled() or job_type not in {"transcript", "summary"}:
@@ -203,8 +205,8 @@ def create_transcription_job(
                 LOG.info("event=transcription_queue_rejected global=%s user=%s", total >= global_limit, user_total >= user_limit)
                 return None
             connection.execute(
-                "INSERT INTO transcription_jobs (id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, job_type, created_at, updated_at) VALUES (%s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s, %s)",
-                (job_id, activity_id, chat_id, user_id, source_url, language, status_message_id, job_type, now, now),
+                "INSERT INTO transcription_jobs (id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, job_type, entitlement_operation_id, created_at, updated_at) VALUES (%s, %s, %s, %s, 'queued', %s, %s, %s, %s, %s, %s, %s)",
+                (job_id, activity_id, chat_id, user_id, source_url, language, status_message_id, job_type, entitlement_operation_id, now, now),
             )
         return job_id
     except Exception:
@@ -271,7 +273,7 @@ def get_transcription_job(job_id: str) -> dict[str, Any] | None:
     try:
         with _lock, _connect() as connection:
             row = connection.execute(
-                "SELECT id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, job_type, attempts, error, created_at, updated_at, next_attempt_at, processing_started_at, processing_duration_seconds FROM transcription_jobs WHERE id = %s",
+                "SELECT id, activity_id, telegram_chat_id, telegram_user_id, status, source_url, language_code, status_message_id, job_type, attempts, error, created_at, updated_at, next_attempt_at, processing_started_at, processing_duration_seconds, entitlement_operation_id FROM transcription_jobs WHERE id = %s",
                 (job_id,),
             ).fetchone()
         if not row:
@@ -281,6 +283,7 @@ def get_transcription_job(job_id: str) -> dict[str, Any] | None:
             "status": row[4], "source_url": row[5], "language": row[6], "status_message_id": row[7], "job_type": row[8],
             "attempts": int(row[9]), "error": row[10], "created_at": row[11], "updated_at": row[12],
             "next_attempt_at": row[13], "processing_started_at": row[14], "processing_duration_seconds": row[15],
+            "entitlement_operation_id": row[16],
         }
     except Exception:
         LOG.warning("Could not read transcription job", exc_info=True)
