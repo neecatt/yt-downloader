@@ -18,8 +18,8 @@ export function UsersScreen() {
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<AccountUser | null>(null);
   const [history, setHistory] = useState<UserHistory[]>([]);
-  const [reason, setReason] = useState("");
-  const [adjustment, setAdjustment] = useState("");
+  const [creditMode, setCreditMode] = useState<"add" | "set">("add");
+  const [creditAmount, setCreditAmount] = useState("");
   const [trials, setTrials] = useState("");
   const [saving, setSaving] = useState(false);
   const pageSize = 25;
@@ -43,16 +43,15 @@ export function UsersScreen() {
   }
 
   async function save(kind: "credits" | "trials" | "complimentary") {
-    if (reason.trim().length < 3) { setError("A reason of at least 3 characters is required."); return; }
-    const payload: { reason: string; creditAdjustment?: number; aiTrials?: number; complimentary?: boolean } = { reason: reason.trim() };
-    if (kind === "credits") payload.creditAdjustment = Number(adjustment);
+    const payload: { creditMode?: "add" | "set"; creditAmount?: number; aiTrials?: number; complimentary?: boolean } = {};
+    if (kind === "credits") { payload.creditMode = creditMode; payload.creditAmount = Number(creditAmount); }
     if (kind === "trials") payload.aiTrials = Number(trials);
     if (kind === "complimentary") payload.complimentary = !selected?.complimentary;
     setSaving(true);
     const response = await fetch(`/api/users/${selected?.user_id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     const data = await response.json(); setSaving(false);
     if (!response.ok) { setError(data.error || "Could not update user."); return; }
-    setSelected(data.user); setReason(""); setAdjustment(""); setTrials("");
+    setSelected(data.user); setCreditAmount(""); setTrials("");
     await refresh(); await open(data.user);
   }
 
@@ -72,9 +71,8 @@ export function UsersScreen() {
       <div className="pagination"><span>Page {page} of {pages} · {total} users</span><div><button className="button ghost small-button" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</button><button className="button ghost small-button" disabled={page >= pages} onClick={() => setPage((value) => value + 1)}>Next</button></div></div>
     </section>
     {selected && <section className="panel user-manager"><div className="composer-heading"><div><span className="section-kicker">Manage user</span><h2>{selected.username || selected.display_name || selected.user_id}</h2></div><button className="button ghost small-button" onClick={() => setSelected(null)}>Close</button></div>
-      <label>Mandatory reason<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why is this access changing?" /></label>
-      <div className="entitlement-actions"><label>Credit adjustment<input type="number" min="-100000" max="100000" value={adjustment} onChange={(event) => setAdjustment(event.target.value)} /><button className="button" disabled={saving || !adjustment} onClick={() => save("credits")}>Apply credits</button></label><label>Set remaining AI trials<input type="number" min="0" max="100" value={trials} onChange={(event) => setTrials(event.target.value)} /><button className="button" disabled={saving || trials === ""} onClick={() => save("trials")}>Set trials</button></label><label>Complimentary access<span className="muted">Currently {selected.complimentary ? "enabled" : "disabled"}</span><button className="button ghost" disabled={saving} onClick={() => save("complimentary")}>{selected.complimentary ? "Revoke" : "Grant"} unlimited</button></label></div>
-      <h2>Audit history</h2><div className="history-list">{history.map((item, index) => <article key={`${item.createdAt}-${index}`}><strong>{item.type}</strong><span>{item.reason}</span><small>{item.actor} · {fmt(item.createdAt)}{item.details ? ` · ${item.details}` : ""}</small></article>)}{!history.length && <p className="muted">No history yet.</p>}</div>
+      <div className="entitlement-actions"><label>Credit balance action<select value={creditMode} onChange={(event) => setCreditMode(event.target.value as "add" | "set")}><option value="add">Top up credits</option><option value="set">Set exact balance</option></select><input type="number" min="0" max="1000000" value={creditAmount} onChange={(event) => setCreditAmount(event.target.value)} placeholder={creditMode === "add" ? "Credits to add" : "New total balance"} /><button className="button" disabled={saving || !creditAmount} onClick={() => save("credits")}>{creditMode === "add" ? "Top up" : "Set balance"}</button></label><label>Set remaining AI trials<input type="number" min="0" max="100" value={trials} onChange={(event) => setTrials(event.target.value)} /><button className="button" disabled={saving || trials === ""} onClick={() => save("trials")}>Set trials</button></label><label>Complimentary access<span className="muted">Currently {selected.complimentary ? "enabled" : "disabled"}</span><button className="button ghost" disabled={saving} onClick={() => save("complimentary")}>{selected.complimentary ? "Revoke" : "Grant"} unlimited</button></label></div>
+      <h2>Audit history</h2><div className="history-list account-history">{history.map((item, index) => <article key={`${item.createdAt}-${index}`}><strong>{item.type}</strong><span>{item.reason}</span><small>{item.actor} · {fmt(item.createdAt)}</small></article>)}{!history.length && <p className="muted">No history yet.</p>}</div>
     </section>}
   </main></AdminLayout>;
 }

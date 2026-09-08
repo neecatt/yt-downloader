@@ -32,7 +32,6 @@ function changedSummary(changed: Record<string, unknown>) {
 
 export function SettingsScreen() {
   const [value, setValue] = useState(defaults);
-  const [reason, setReason] = useState("");
   const [history, setHistory] = useState<MonetizationSettingsAudit[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -63,7 +62,6 @@ export function SettingsScreen() {
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
-    if (reason.trim().length < 3) { setError("Give a reason of at least 3 characters."); return; }
     setSaving(true); setError(""); setMessage("");
     try {
       const payload = {
@@ -82,14 +80,13 @@ export function SettingsScreen() {
         costAlertFileMb: value.costAlertFileMb,
         rolloutPercent: value.rolloutPercent,
         rolloutUserIds: value.rolloutUserIds,
-        reason: reason.trim(),
       };
       const response = await fetch("/api/settings/monetization", {
         method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Could not save settings");
-      setValue(data); setReason(""); setMessage("Settings saved. New operations will use them immediately.");
+      setValue(data); setMessage("Settings saved. New operations will use them immediately.");
       await loadHistory();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not save settings");
@@ -108,7 +105,6 @@ export function SettingsScreen() {
           {([ ["starterCredits", "Starter credits", 0, 1000], ["aiCreditCost", "AI request cost", 0, 1000], ["dailyDownloadLimit", "Daily downloads per user", 1, 500], ["aiTrials", "Legacy AI trials", 0, 100], ["premiumPriceStars", "Premium price (Stars)", 1, 100000], ["referralInviterReward", "Inviter reward", 0, 1000], ["referralInviteeReward", "Invitee reward", 0, 1000], ["referralRequiredDownloads", "Successful operations to qualify", 1, 100], ["referralMonthlyCap", "Referral cap / 30 days", 0, 100], ["rolloutPercent", "Rollout percentage", 0, 100], ["staleReservationSeconds", "Stale reservation seconds", 300, 86400], ["costAlertFileMb", "Large-file alert (MB)", 1, 4096] ] as const).map(([name, label, min, max]) => <label key={name}>{label}<input type="number" min={min} max={max} value={value[name]} onChange={(event) => setNumber(name, event.target.value)} /></label>)}
         </div>
         <label>Rollout user IDs<input value={value.rolloutUserIds.join(", ")} onChange={(event) => setValue({ ...value, rolloutUserIds: event.target.value.split(",").map((item) => Number(item.trim())).filter((item) => Number.isSafeInteger(item) && item > 0) })} placeholder="Telegram IDs, comma separated" /></label>
-        <label>Audit reason<input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why are these settings changing?" required /></label>
         {error && <p className="form-error">{error}</p>}{message && <p className="form-success">{message}</p>}
         <div className="composer-actions"><span className="muted">Changes apply to new decisions immediately.</span><button className="button" disabled={saving}>{saving ? "Saving…" : "Save settings"}</button></div>
       </form>}

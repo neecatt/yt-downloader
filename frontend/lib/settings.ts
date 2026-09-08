@@ -19,7 +19,7 @@ export async function fetchMonetizationSettings() {
   return await response.json() as MonetizationSettings;
 }
 
-export async function updateMonetizationSettings(payload: Partial<MonetizationSettings> & { reason: string }) {
+export async function updateMonetizationSettings(payload: Partial<MonetizationSettings> & { reason?: string }) {
   const response = await fetch(apiUrl("/admin/settings/monetization"), { method: "PATCH", headers: headers(true), body: JSON.stringify(payload), cache: "no-store", signal: AbortSignal.timeout(8000) });
   const data = await response.json().catch(() => null);
   if (!response.ok) throw new Error(data?.detail || "Could not update monetization settings");
