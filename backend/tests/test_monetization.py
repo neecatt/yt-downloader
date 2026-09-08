@@ -464,10 +464,23 @@ class AdminEntitlementApiTests(unittest.TestCase):
         response = self.client.get("/admin/users?access=owner", headers={"Authorization": "Bearer test-admin-token"})
         self.assertEqual(response.status_code, 400)
 
-    def test_entitlement_update_requires_reason_and_bounded_values(self):
+    def test_entitlement_update_accepts_optional_reason_and_validates_values(self):
         headers = {"Authorization": "Bearer test-admin-token"}
-        self.assertEqual(self.client.patch("/admin/users/7", headers=headers, json={"creditAdjustment": 1, "reason": "x"}).status_code, 400)
+        self.assertEqual(self.client.patch("/admin/users/7", headers=headers, json={"creditAdjustment": 1, "reason": "x"}).status_code, 404)
         self.assertEqual(self.client.patch("/admin/users/7", headers=headers, json={"creditAdjustment": 100001, "reason": "manual grant"}).status_code, 400)
+
+    def test_entitlement_update_supports_add_and_set_credit_modes_without_reason(self):
+        headers = {"Authorization": "Bearer test-admin-token"}
+        updated = {"telegram_user_id": 7}
+        with patch.object(store, "admin_update_user", return_value=updated) as update:
+            response = self.client.patch("/admin/users/7", headers=headers, json={"creditMode": "add", "creditAmount": 20})
+        self.assertEqual(response.status_code, 200)
+        update.assert_called_once_with(7, credit_adjustment=None, credit_mode="add", credit_amount=20, ai_trials=None, complimentary=None, reason="Admin entitlement update")
+
+        with patch.object(store, "admin_update_user", return_value=updated) as update:
+            response = self.client.patch("/admin/users/7", headers=headers, json={"creditMode": "set", "creditAmount": 30})
+        self.assertEqual(response.status_code, 200)
+        update.assert_called_once_with(7, credit_adjustment=None, credit_mode="set", credit_amount=30, ai_trials=None, complimentary=None, reason="Admin entitlement update")
 
     def test_entitlement_update_rejects_unknown_fields_zero_adjustments_and_controls(self):
         headers = {"Authorization": "Bearer test-admin-token"}
@@ -487,6 +500,13 @@ class AdminEntitlementApiTests(unittest.TestCase):
             response = self.client.patch("/admin/settings/monetization", headers=headers, json={"premiumPriceStars": 129, "reason": "pricing test"})
         self.assertEqual(response.status_code, 200)
         update.assert_called_once_with({"premium_price_stars": 129}, reason="pricing test")
+
+    def test_monetization_settings_accepts_missing_reason(self):
+        headers = {"Authorization": "Bearer test-admin-token"}
+        with patch.object(store, "update_monetization_settings", return_value={"premiumPriceStars": 129}) as update:
+            response = self.client.patch("/admin/settings/monetization", headers=headers, json={"premiumPriceStars": 129})
+        self.assertEqual(response.status_code, 200)
+        update.assert_called_once_with({"premium_price_stars": 129}, reason="Admin settings update")
 
     def test_settings_endpoint_accepts_configurable_ai_credit_cost(self):
         headers = {"Authorization": "Bearer test-admin-token"}

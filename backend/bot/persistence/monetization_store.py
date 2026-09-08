@@ -778,8 +778,9 @@ def admin_query_users(*, q: str | None, access: str | None, page: int, page_size
     return {"users": users, "page": page, "pageSize": page_size, "total": total}
 
 
-def admin_update_user(user_id: int, *, credit_adjustment: int | None, ai_trials: int | None,
-                      complimentary: bool | None, reason: str, actor: str = "admin") -> dict[str, Any] | None:
+def admin_update_user(user_id: int, *, credit_adjustment: int | None = None, credit_mode: str | None = None,
+                      credit_amount: int | None = None, ai_trials: int | None, complimentary: bool | None,
+                      reason: str = "Admin entitlement update", actor: str = "admin") -> dict[str, Any] | None:
     if not enabled():
         return None
     now = _now()
@@ -787,18 +788,35 @@ def admin_update_user(user_id: int, *, credit_adjustment: int | None, ai_trials:
         row = connection.execute(f"SELECT {_ACCOUNT_COLUMNS} FROM user_accounts WHERE telegram_user_id=%s FOR UPDATE", (user_id,)).fetchone()
         if not row: return None
         account = _row_to_account(row)
-        if credit_adjustment is not None:
+        if credit_amount is not None and credit_mode not in {"add", "set"}:
+            raise ValueError("Credit mode must be add or set")
+        if credit_amount is not None and credit_adjustment is not None:
+            raise ValueError("Use either credit amount or credit adjustment, not both")
+        if credit_amount is not None and (type(credit_amount) is not int or not 0 <= credit_amount <= 1_000_000):
+            raise ValueError("Credit amount must be an integer from 0 to 1000000")
+        if credit_mode == "add" and credit_amount == 0:
+            raise ValueError("Credit top-up must be greater than zero")
+        if credit_amount is not None:
+            new_balance = account["credits"] + credit_amount if credit_mode == "add" else credit_amount
+            credit_delta = new_balance - account["credits"]
+        elif credit_adjustment is not None:
             new_balance = account["credits"] + credit_adjustment
+            credit_delta = credit_adjustment
+        else:
+            new_balance = account["credits"]
+            credit_delta = None
+        if credit_delta is not None:
             if new_balance < account["reserved_credits"] or new_balance > 1_000_000: raise ValueError("Credit balance cannot be below reserved credits or above 1000000")
             connection.execute("UPDATE user_accounts SET credit_balance=%s,updated_at=%s WHERE telegram_user_id=%s", (new_balance, now, user_id))
-            connection.execute("INSERT INTO credit_ledger VALUES (%s,%s,%s,%s,'admin_adjustment',NULL,%s,%s)", (uuid.uuid4().hex, user_id, credit_adjustment, new_balance, actor, now))
+            ledger_reason = "admin_set_balance" if credit_mode == "set" else "admin_adjustment"
+            connection.execute("INSERT INTO credit_ledger VALUES (%s,%s,%s,%s,%s,NULL,%s,%s)", (uuid.uuid4().hex, user_id, credit_delta, new_balance, ledger_reason, actor, now))
         if ai_trials is not None:
             if account["reserved_ai_trials"]:
                 raise ValueError("AI trials cannot be changed while an AI operation is reserved")
             connection.execute("UPDATE user_accounts SET ai_trials_remaining=%s,updated_at=%s WHERE telegram_user_id=%s", (ai_trials, now, user_id))
         if complimentary is not None:
             connection.execute("UPDATE user_accounts SET complimentary_unlimited=%s,updated_at=%s WHERE telegram_user_id=%s", (complimentary, now, user_id))
-        details = f"credits={credit_adjustment};ai_trials={ai_trials};complimentary={complimentary}"
+        details = f"credits={credit_delta};mode={credit_mode or 'adjustment'};ai_trials={ai_trials};complimentary={complimentary}"
         connection.execute("INSERT INTO entitlement_audit VALUES (%s,%s,'admin_entitlement_update',%s,%s,%s,%s)", (uuid.uuid4().hex, user_id, reason, actor, details, now))
         row = connection.execute(f"SELECT {_ACCOUNT_COLUMNS} FROM user_accounts WHERE telegram_user_id=%s", (user_id,)).fetchone()
     account = _row_to_account(row)

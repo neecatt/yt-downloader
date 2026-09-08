@@ -87,9 +87,9 @@ def _monetization_patch(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     unknown = set(payload) - {*_MONETIZATION_FIELDS, "reason"}
     if unknown:
         raise HTTPException(status_code=400, detail="Unknown monetization setting")
-    reason = payload.get("reason")
-    if not isinstance(reason, str) or not 3 <= len(reason.strip()) <= 500:
-        raise HTTPException(status_code=400, detail="A reason of 3 to 500 characters is required")
+    reason = payload.get("reason", "Admin settings update")
+    if not isinstance(reason, str) or len(reason.strip()) > 500:
+        raise HTTPException(status_code=400, detail="Reason must be 500 characters or fewer")
     changes = {}
     for public_name, internal_name in _MONETIZATION_FIELDS.items():
         if public_name in payload:
@@ -111,7 +111,7 @@ def _monetization_patch(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
             raise HTTPException(status_code=400, detail=f"{name} is outside its safe range")
     if "rolloutUserIds" in payload and (not isinstance(payload["rolloutUserIds"], list) or len(payload["rolloutUserIds"]) > 1000 or any(type(value) is not int or not 0 < value <= 9_223_372_036_854_775_807 for value in payload["rolloutUserIds"])):
         raise HTTPException(status_code=400, detail="rolloutUserIds must contain at most 1000 valid Telegram IDs")
-    return changes, reason.strip()
+    return changes, reason.strip() or "Admin settings update"
 
 
 async def _send_to_chats(chat_ids: list[int], message: str) -> tuple[int, int]:
@@ -278,14 +278,26 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=401, detail="Unauthorized")
         if user_id <= 0 or user_id > 9_223_372_036_854_775_807:
             raise HTTPException(status_code=400, detail="Invalid Telegram user ID")
-        unknown = set(payload) - {"creditAdjustment", "aiTrials", "complimentary", "reason"}
+        unknown = set(payload) - {"creditAdjustment", "creditMode", "creditAmount", "aiTrials", "complimentary", "reason"}
         if unknown:
             raise HTTPException(status_code=400, detail="Unknown entitlement field")
-        reason = payload.get("reason")
-        if (not isinstance(reason, str) or not 3 <= len(reason.strip()) <= 500
+        reason = payload.get("reason", "Admin entitlement update")
+        if (not isinstance(reason, str) or len(reason.strip()) > 500
                 or any(ord(character) < 32 and character not in "\t\n\r" for character in reason)):
-            raise HTTPException(status_code=400, detail="A reason of 3 to 500 characters is required")
+            raise HTTPException(status_code=400, detail="Reason must be 500 characters or fewer")
         adjustment = payload.get("creditAdjustment")
+        credit_mode = payload.get("creditMode")
+        credit_amount = payload.get("creditAmount")
+        if credit_mode is not None and credit_mode not in {"add", "set"}:
+            raise HTTPException(status_code=400, detail="Credit mode must be add or set")
+        if credit_amount is not None and (type(credit_amount) is not int or not 0 <= credit_amount <= 1_000_000):
+            raise HTTPException(status_code=400, detail="Credit amount must be an integer from 0 to 1000000")
+        if (credit_mode is None) != (credit_amount is None):
+            raise HTTPException(status_code=400, detail="Credit mode and amount must be supplied together")
+        if credit_amount is not None and adjustment is not None:
+            raise HTTPException(status_code=400, detail="Use either credit amount or credit adjustment, not both")
+        if credit_mode == "add" and credit_amount == 0:
+            raise HTTPException(status_code=400, detail="Credit top-up must be greater than zero")
         ai_trials = payload.get("aiTrials")
         complimentary = payload.get("complimentary")
         if adjustment is not None and (type(adjustment) is not int or not -100_000 <= adjustment <= 100_000):
@@ -296,13 +308,14 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="AI trials must be an integer from 0 to 100")
         if complimentary is not None and type(complimentary) is not bool:
             raise HTTPException(status_code=400, detail="Complimentary access must be true or false")
-        if adjustment is None and ai_trials is None and complimentary is None:
+        if adjustment is None and credit_amount is None and ai_trials is None and complimentary is None:
             raise HTTPException(status_code=400, detail="No entitlement change supplied")
         try:
             updated = await asyncio.to_thread(
                 monetization_store.admin_update_user, user_id,
-                credit_adjustment=adjustment, ai_trials=ai_trials,
-                complimentary=complimentary, reason=reason.strip(),
+                credit_adjustment=adjustment, credit_mode=credit_mode, credit_amount=credit_amount,
+                ai_trials=ai_trials, complimentary=complimentary,
+                reason=reason.strip() or "Admin entitlement update",
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
