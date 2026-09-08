@@ -19,6 +19,18 @@ def _flag(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _positive_ints(name: str) -> tuple[int, ...]:
+    values: set[int] = set()
+    for item in os.getenv(name, "").split(","):
+        try:
+            value = int(item.strip())
+        except ValueError:
+            continue
+        if 0 < value <= 9_223_372_036_854_775_807:
+            values.add(value)
+    return tuple(sorted(values))
+
+
 @dataclass(frozen=True, slots=True)
 class TelegramSettings:
     token: str | None
@@ -87,6 +99,26 @@ class DonationSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class MonetizationSettings:
+    enabled: bool
+    starter_credits: int
+    ai_credit_cost: int
+    daily_download_limit: int
+    ai_trials: int
+    referral_inviter_reward: int
+    referral_invitee_reward: int
+    referral_required_downloads: int
+    referral_monthly_cap: int
+    premium_price_stars: int
+    subscription_period_seconds: int
+    stale_reservation_seconds: int
+    cost_alert_file_bytes: int
+    rollout_percent: int
+    rollout_user_ids: tuple[int, ...]
+    premium_enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AppSettings:
     telegram: TelegramSettings
     download: DownloadSettings
@@ -94,6 +126,34 @@ class AppSettings:
     runtime: RuntimeSettings
     admin: AdminSettings
     donation: DonationSettings
+    monetization: MonetizationSettings
+
+
+def load_monetization_settings() -> MonetizationSettings:
+    """Load first-run monetization defaults from the environment.
+
+    Once PostgreSQL is initialized, the admin-managed configuration takes
+    precedence. Keeping this function separate makes the bootstrap contract
+    explicit and keeps secrets out of the admin settings surface.
+    """
+    return MonetizationSettings(
+        enabled=_flag("MONETIZATION_ENABLED", False),
+        starter_credits=_int("STARTER_CREDITS", 100, 0, 1000),
+        ai_credit_cost=_int("AI_CREDIT_COST", 5, 0, 1000),
+        daily_download_limit=_int("DOWNLOADS_PER_USER_PER_DAY", 15, 1, 500),
+        ai_trials=_int("AI_TRIALS", 2, 0, 100),
+        referral_inviter_reward=_int("REFERRAL_INVITER_REWARD", 50, 0, 1000),
+        referral_invitee_reward=_int("REFERRAL_INVITEE_REWARD", 50, 0, 1000),
+        referral_required_downloads=_int("REFERRAL_REQUIRED_DOWNLOADS", 1, 1, 100),
+        referral_monthly_cap=_int("REFERRAL_MONTHLY_CAP", 5, 0, 100),
+        premium_price_stars=_int("PREMIUM_PRICE_STARS", 149, 1, 100000),
+        subscription_period_seconds=2_592_000,
+        stale_reservation_seconds=_int("STALE_RESERVATION_SECONDS", 7200, 300, 86400),
+        cost_alert_file_bytes=_int("COST_ALERT_FILE_MB", 1024, 1, 4096) * 1024 * 1024,
+        rollout_percent=_int("MONETIZATION_ROLLOUT_PERCENT", 100, 0, 100),
+        rollout_user_ids=_positive_ints("MONETIZATION_ROLLOUT_USER_IDS"),
+        premium_enabled=_flag("PREMIUM_ENABLED", False),
+    )
 
 
 def load_settings() -> AppSettings:
@@ -143,7 +203,7 @@ def load_settings() -> AppSettings:
             analyses_per_user_hour=_int("ANALYSES_PER_USER_PER_HOUR", 20, 1, 100),
             analyses_global_hour=_int("ANALYSES_GLOBAL_PER_HOUR", 300, 1, 2000),
             downloads_per_user_hour=_int("DOWNLOADS_PER_USER_PER_HOUR", 10, 1, 100),
-            downloads_per_user_day=_int("DOWNLOADS_PER_USER_PER_DAY", 20, 10, 500),
+            downloads_per_user_day=_int("DOWNLOADS_PER_USER_PER_DAY", 15, 1, 500),
             downloads_global_hour=_int("DOWNLOADS_GLOBAL_PER_HOUR", 100, 1, 1000),
         ),
         admin=AdminSettings(
@@ -154,6 +214,7 @@ def load_settings() -> AppSettings:
             url=os.getenv("DONATION_URL", "").strip(), prompts_enabled=_flag("DONATION_PROMPTS_ENABLED", True),
             cooldown_seconds=_int("DONATION_PROMPT_COOLDOWN_HOURS", 24, 0) * 3600,
         ),
+        monetization=load_monetization_settings(),
     )
 
 

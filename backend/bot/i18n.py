@@ -7,7 +7,7 @@ LANGUAGE_NAMES = {"en": "🇬🇧 English", "ru": "🇷🇺 Русский", "az
 
 _TEXT: dict[str, dict[str, str]] = {
     "en": {
-        "welcome": "🎬 Send me a public video link.\n\nChoose video, MP3, transcript, or summary. Small files can be sent through Telegram; large files get a temporary download link.\n\nYouTube · TikTok · Instagram · Facebook · X · LinkedIn",
+        "welcome": "👋 Welcome!\n\nDownload videos and get AI-powered transcriptions & summaries — directly in Telegram.\n\n🔗 Just send me a link from YouTube, TikTok, Instagram, or another supported platform.\n\nI can help you:\n\n📥 Download videos\n📝 Transcribe audio/video\n✨ Summarize content with AI\n🌍 Translate transcripts\n\nNo complicated setup — just paste a link to get started.",
         "support": "If this bot saves you time, you can support its hosting costs.\n\nDonations are completely optional, and the bot remains free for everyone. ☕",
         "support_unconfigured": "Support is not configured yet, but the bot remains free to use.",
         "feedback_usage": "Thanks for helping improve the bot! Send your feedback like this:\n\n/feedback Your message here",
@@ -44,7 +44,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "ready_link_large": "The media exceeds Telegram's upload limit, so I’m giving you a temporary download link instead.",
     },
     "ru": {
-        "welcome": "🎬 Отправьте публичную ссылку на видео.\n\nВыберите видео, MP3, расшифровку или краткое содержание. Небольшие файлы можно получить в Telegram, большие — по временной ссылке.\n\nYouTube · TikTok · Instagram · Facebook · X · LinkedIn",
+        "welcome": "👋 Добро пожаловать!\n\nСкачивайте видео и получайте расшифровки и краткие содержания с помощью ИИ — прямо в Telegram.\n\n🔗 Просто отправьте ссылку с YouTube, TikTok, Instagram или другой поддерживаемой платформы.\n\nЯ умею:\n\n📥 Скачивать видео\n📝 Расшифровывать аудио и видео\n✨ Делать краткие содержания с помощью ИИ\n🌍 Переводить расшифровки\n\nНикаких сложных настроек — просто отправьте ссылку.",
         "support": "Если бот экономит ваше время, вы можете поддержать расходы на его хостинг.\n\nПожертвования полностью добровольны, бот остаётся бесплатным для всех. ☕",
         "support_unconfigured": "Поддержка пока не настроена, но бот остаётся бесплатным.",
         "feedback_usage": "Спасибо, что помогаете улучшать бота! Отправьте отзыв так:\n\n/feedback Ваше сообщение",
@@ -60,7 +60,7 @@ _TEXT: dict[str, dict[str, str]] = {
         "ready_choice": "✅ Готово: {title}\nРазмер: {size:.1f} МБ\n\nКак отправить файл?", "link_unconfigured": "Ссылки для скачивания не настроены. Выберите отправку в Telegram.", "delivery_expired": "Выбор доставки истёк. Отправьте ссылку ещё раз.", "upload_telegram": "⬆️ Отправляю в Telegram…\nЗагрузка: 100%", "prepare_link": "☁️ Подготавливаю ссылку…", "telegram_failed_other": "Telegram не смог принять файл. Попробуйте другой способ доставки.", "telegram_failed_quality": "Telegram не смог принять файл. Попробуйте более низкое качество.", "downloading": "⬇️ Загружаю {fmt}…", "upload_cloud": "☁️ Загружаю в облачное хранилище…\nЗагрузка: 100%", "already_running": "В этом чате уже выполняется загрузка. Подождите.", "download_limit": "Вы достигли лимита загрузок. Попробуйте позже.", "invalid_button": "Эта кнопка больше недействительна. Отправьте ссылку ещё раз.", "link_expired": "Срок действия ссылки истёк. Отправьте её ещё раз.", "ready_link_choice": "Вы выбрали временную ссылку для скачивания.", "ready_link_large": "Файл превышает лимит Telegram, поэтому я выдаю временную ссылку для скачивания.",
     },
     "az": {
-        "welcome": "🎬 İctimai video linkini göndərin.\n\nVideo, MP3, transkripsiya və ya xülasə seçin. Kiçik fayllar Telegram-la, böyük fayllar müvəqqəti linklə verilir.\n\nYouTube · TikTok · Instagram · Facebook · X · LinkedIn",
+        "welcome": "👋 Xoş gəlmisiniz!\n\nVideoları yükləyin və AI ilə transkripsiya və xülasələr əldə edin — birbaşa Telegram-da.\n\n🔗 Sadəcə YouTube, TikTok, Instagram və ya dəstəklənən başqa platformadan link göndərin.\n\nSizə kömək edə bilərəm:\n\n📥 Videoları yükləmək\n📝 Audio/videonu transkripsiya etmək\n✨ AI ilə məzmunu xülasə etmək\n🌍 Transkripsiyaları tərcümə etmək\n\nMürəkkəb quraşdırma lazım deyil — başlamaq üçün linki göndərin.",
         "support": "Bu bot vaxtınıza qənaət edirsə, hosting xərclərini dəstəkləyə bilərsiniz.\n\nİanələr tamamilə könüllüdür və bot hər kəs üçün pulsuz olaraq qalır. ☕",
         "support_unconfigured": "Dəstək hələ konfiqurasiya edilməyib, lakin bot pulsuz olaraq qalır.",
         "feedback_usage": "Botu yaxşılaşdırmağa kömək etdiyiniz üçün təşəkkürlər! Rəyinizi belə göndərin:\n\n/feedback Rəyiniz burada",
@@ -157,6 +157,74 @@ _TEXT["az"].update({
 _TEXT["en"]["transcription_help"] = "📝 Want text instead? Tap ‘Transcribe speech’ after sending a link, or use /transcribe <link>. The bot returns a timestamped .txt file."
 _TEXT["ru"]["transcription_help"] = "📝 Нужен текст? Нажмите «Расшифровать речь» после отправки ссылки или используйте /transcribe <ссылка>. Бот вернёт .txt-файл с таймкодами."
 _TEXT["az"]["transcription_help"] = "📝 Mətn lazımdır? Link göndərdikdən sonra «Nitqi mətnə çevir» düyməsinə basın və ya /transcribe <link> əmrindən istifadə edin. Bot vaxt göstəricili .txt faylı qaytaracaq."
+
+_TEXT["en"].update({
+    "credits_title": "💳 Your account", "credits_balance": "Credits: {available} available · {reserved} reserved",
+    "credits_unlimited": "Credits: unlimited", "ai_trials": "AI trials: {trials} ({reserved} reserved)",
+    "ai_unlimited": "AI transcription & summaries: unlimited", "ai_cost": "AI transcription or summary: {cost} credits", "premium_active": "Premium active until {date}",
+    "complimentary_active": "Complimentary unlimited access", "free_account": "Free account",
+    "referral_progress": "Invites: {qualified} rewarded · {pending} pending",
+    "invite_button": "🎁 Invite friends", "upgrade_button": "⭐ Upgrade", "cancel_renewal_button": "Stop renewal",
+    "need_credits": "You need {cost} credits for this AI request. Your link is still here—invite friends to earn more credits, then try again.",
+    "need_ai_trials": "Your {trials} free AI trials are used. Your link is still here—upgrade for unlimited transcripts and summaries.",
+    "account_unavailable": "Account service is temporarily unavailable. Nothing was charged; please try again shortly.",
+    "invite_text": "🎁 Invite friends\n\nShare this link:\n{url}\n\nWhen a new user successfully uses the bot for the first time, you both receive {inviter_reward} credits. Up to {cap} rewarded invites every rolling 30 days.",
+    "referral_attached": "Referral accepted. Use the bot successfully once to unlock {reward} bonus credits.",
+    "premium_offer": "⭐ Premium · {price} Telegram Stars every 30 days\n\nUnlimited download credits and unlimited transcripts and summaries, subject to the same fair-use and capacity limits. Renewal can be stopped any time; access lasts until the paid period ends. Payment is handled by Telegram; Stars can be purchased through Telegram on iPhone or Android.",
+    "premium_unavailable": "Premium checkout is not open yet. You can keep using the bot normally.",
+    "premium_already_active": "Premium is already active on this account. Use /credits to view or stop renewal.",
+    "buy_premium": "Continue to payment", "premium_paid": "✅ Premium is active. You now have unlimited credits and AI access.",
+    "premium_payment_invalid": "This payment request expired or does not match your account. Open /premium and try again.",
+    "renewal_cancelled": "Renewal is off. Premium remains active until {date}.", "renewal_cancel_failed": "I could not stop renewal right now. Contact /paysupport.",
+    "terms": "Terms\n\nUse this bot only for media you own or are permitted to download. You are responsible for complying with copyright and platform rules. Premium provides unlimited credits, not unrestricted infrastructure; fair-use rate and capacity limits still apply. Subscriptions renew every 30 days until cancelled. Access continues through the paid period after cancellation.",
+    "paysupport": "Payment support\n\nFor a payment, renewal, or refund request, send /feedback with the approximate payment time and a short description. Refund requests are reviewed case by case. Never send passwords, payment card details, or login cookies.",
+    "referral_rewarded": "🎉 Referral unlocked: {credits} permanent credits were added.",
+    "account_help": "Account commands:\n/credits — View your credit balance\n/invite — Invite friends and earn credits",
+    "account_private_only": "Open a private chat with the bot to view your account or make a payment.",
+    "premium_invoice_title": "Downloader Premium", "premium_invoice_description": "Unlimited credits and AI access for 30 days (fair-use limits apply)", "premium_invoice_price": "Premium · 30 days",
+})
+_TEXT["ru"].update({
+    "credits_title": "💳 Ваш аккаунт", "credits_balance": "Кредиты: {available} доступно · {reserved} зарезервировано", "credits_unlimited": "Кредиты: безлимитно",
+    "ai_trials": "Пробные AI-функции: {trials} ({reserved} зарезервировано)", "ai_cost": "Транскрипция или сводка: {cost} кредитов", "ai_unlimited": "Расшифровки и сводки: безлимитно",
+    "premium_active": "Premium активен до {date}", "complimentary_active": "Бесплатный безлимитный доступ", "free_account": "Бесплатный аккаунт",
+    "referral_progress": "Приглашения: {qualified} награждено · {pending} ожидает", "invite_button": "🎁 Пригласить", "upgrade_button": "⭐ Premium", "cancel_renewal_button": "Остановить продление",
+    "need_credits": "Для этого AI-запроса нужно {cost} кредитов. Ссылка сохранена — пригласите друзей, чтобы получить кредиты, и попробуйте снова.",
+    "need_ai_trials": "{trials} бесплатные AI-попытки использованы. Ссылка сохранена — Premium даёт безлимитные расшифровки и сводки.",
+    "account_unavailable": "Сервис аккаунтов временно недоступен. Кредит не списан; повторите позже.",
+    "invite_text": "🎁 Пригласите друзей\n\nПоделитесь ссылкой:\n{url}\n\nКогда новый пользователь выполнит {required} загрузки, вы получите {inviter_reward} кредитов, а он — {invitee_reward}. До {cap} наград за любые 30 дней.",
+    "referral_attached": "Приглашение принято. Выполните {required} загрузки, чтобы получить {reward} бонусных кредитов.",
+    "premium_offer": "⭐ Premium · {price} Telegram Stars каждые 30 дней\n\nБезлимитные кредиты, расшифровки и сводки при обычных лимитах честного использования и мощности. Продление можно отключить в любой момент. Оплату обрабатывает Telegram; Stars можно купить в Telegram на iPhone или Android.",
+    "premium_unavailable": "Оплата Premium пока не открыта. Вы можете продолжать пользоваться ботом как обычно.",
+    "premium_already_active": "Premium уже активен. Откройте /credits, чтобы посмотреть статус или отключить продление.",
+    "buy_premium": "Перейти к оплате", "premium_paid": "✅ Premium активен. Кредиты и AI-функции теперь безлимитны.", "premium_payment_invalid": "Счёт истёк или не принадлежит аккаунту. Откройте /premium снова.",
+    "renewal_cancelled": "Продление отключено. Premium активен до {date}.", "renewal_cancel_failed": "Не удалось отключить продление. Обратитесь через /paysupport.",
+    "terms": "Условия\n\nИспользуйте бот только для материалов, которые вам принадлежат или которые разрешено скачивать. Вы отвечаете за соблюдение авторских прав и правил платформ. Premium означает безлимитные кредиты, но обычные лимиты честного использования и мощности сохраняются. Подписка продлевается каждые 30 дней до отмены.",
+    "paysupport": "Поддержка платежей\n\nДля решения проблемы с оплатой, продлением или запроса возврата отправьте /feedback с примерным временем платежа и описанием. Запросы возврата рассматриваются индивидуально. Не отправляйте пароли, данные карты или cookies.", "referral_rewarded": "🎉 Награда за приглашение: добавлено {credits} постоянных кредитов.",
+    "account_help": "Команды аккаунта:\n/credits — Посмотреть баланс\n/invite — Пригласить друзей и получить кредиты",
+    "account_private_only": "Откройте личный чат с ботом, чтобы посмотреть аккаунт или оплатить подписку.",
+    "premium_invoice_title": "Downloader Premium", "premium_invoice_description": "Безлимитные кредиты и AI на 30 дней с лимитами честного использования", "premium_invoice_price": "Premium · 30 дней",
+})
+_TEXT["az"].update({
+    "credits_title": "💳 Hesabınız", "credits_balance": "Kreditlər: {available} mövcuddur · {reserved} rezervdə", "credits_unlimited": "Kreditlər: limitsiz",
+    "ai_trials": "AI sınaqları: {trials} ({reserved} rezervdə)", "ai_cost": "Transkripsiya və ya xülasə: {cost} kredit", "ai_unlimited": "Transkripsiya və xülasələr: limitsiz",
+    "premium_active": "Premium {date} tarixinədək aktivdir", "complimentary_active": "Hədiyyə limitsiz giriş", "free_account": "Pulsuz hesab",
+    "referral_progress": "Dəvətlər: {qualified} mükafatlandırılıb · {pending} gözləyir", "invite_button": "🎁 Dost dəvət et", "upgrade_button": "⭐ Premium", "cancel_renewal_button": "Yenilənməni dayandır",
+    "need_credits": "Bu AI sorğusu üçün {cost} kredit lazımdır. Link saxlanılıb — kredit qazanmaq üçün dostlarınızı dəvət edin və yenidən cəhd edin.",
+    "need_ai_trials": "{trials} pulsuz AI sınağı bitib. Link saxlanılıb — Premium limitsiz transkripsiya və xülasə verir.",
+    "account_unavailable": "Hesab xidməti müvəqqəti əlçatan deyil. Kredit tutulmadı; bir az sonra yenidən cəhd edin.",
+    "invite_text": "🎁 Dostlarınızı dəvət edin\n\nBu linki paylaşın:\n{url}\n\nYeni istifadəçi {required} yükləməni tamamlayanda siz {inviter_reward}, o isə {invitee_reward} kredit qazanır. Hər 30 gündə {cap} mükafatadək.",
+    "referral_attached": "Dəvət qəbul edildi. {reward} bonus kredit üçün {required} yükləməni tamamlayın.",
+    "premium_offer": "⭐ Premium · hər 30 gün üçün {price} Telegram Stars\n\nAdi ədalətli istifadə və tutum limitləri daxilində limitsiz kredit, transkripsiya və xülasə. Yenilənməni istənilən vaxt dayandırmaq olar. Ödənişi Telegram emal edir; Stars iPhone və ya Android-də Telegram daxilindən alına bilər.",
+    "premium_unavailable": "Premium ödənişi hələ açıq deyil. Botdan adi qaydada istifadə edə bilərsiniz.",
+    "premium_already_active": "Premium artıq aktivdir. Statusa baxmaq və ya yenilənməni dayandırmaq üçün /credits açın.",
+    "buy_premium": "Ödənişə keç", "premium_paid": "✅ Premium aktivdir. Kreditlər və AI imkanları limitsizdir.", "premium_payment_invalid": "Ödəniş sorğusu bitib və ya hesabınıza uyğun deyil. /premium əmrini yenidən açın.",
+    "renewal_cancelled": "Yenilənmə söndürüldü. Premium {date} tarixinədək aktivdir.", "renewal_cancel_failed": "Yenilənməni dayandırmaq mümkün olmadı. /paysupport ilə əlaqə saxlayın.",
+    "terms": "Şərtlər\n\nBotdan yalnız sizə məxsus və ya yükləməyə icazəniz olan media üçün istifadə edin. Müəllif hüquqları və platforma qaydalarına əməl etmək sizin məsuliyyətinizdir. Premium limitsiz kredit deməkdir; ədalətli istifadə və tutum limitləri qalır. Abunə ləğv edilənədək hər 30 gündə yenilənir.",
+    "paysupport": "Ödəniş dəstəyi\n\nÖdəniş, yenilənmə və ya geri qaytarma sorğusu üçün təxmini ödəniş vaxtı və qısa izahla /feedback göndərin. Geri qaytarma sorğuları fərdi qaydada nəzərdən keçirilir. Şifrə, kart məlumatı və cookies göndərməyin.", "referral_rewarded": "🎉 Dəvət mükafatı: {credits} daimi kredit əlavə edildi.",
+    "account_help": "Hesab əmrləri:\n/credits — Kredit balansına bax\n/invite — Dostları dəvət et və kredit qazan",
+    "account_private_only": "Hesabınıza baxmaq və ya ödəniş etmək üçün botla şəxsi söhbəti açın.",
+    "premium_invoice_title": "Downloader Premium", "premium_invoice_description": "Ədalətli istifadə limitləri ilə 30 günlük limitsiz kredit və AI girişi", "premium_invoice_price": "Premium · 30 gün",
+})
 
 
 def normalize_language(language: str | None) -> str:

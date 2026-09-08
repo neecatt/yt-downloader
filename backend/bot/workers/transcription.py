@@ -16,7 +16,7 @@ from telegram import Bot
 
 from ..queue.config import app
 from ..queue.recovery import retryable, retry_delay_seconds
-from ..persistence import activity_store
+from ..persistence import activity_store, monetization_store
 from ..i18n import tr
 from ..platforms.media import display_error
 from ..platforms.security import safe_log_error
@@ -100,6 +100,7 @@ def initialize_worker_state() -> None:
     if _WORKER_INITIALIZED:
         return
     activity_store.initialize()
+    monetization_store.initialize()
     recovered = activity_store.recover_stale_transcription_jobs(
         stale_after_seconds=max(3600, int(os.getenv("TRANSCRIPTION_STALE_JOB_SECONDS", "21600")))
     )
@@ -170,30 +171,19 @@ async def _deliver(job: dict[str, Any], transcript: str, title: str, ui_language
         shutil.rmtree(directory, ignore_errors=True)
 
 
-async def _deliver_summary(job: dict[str, Any], summary: str, transcript: str, title: str, ui_language: str, detected_language: str) -> None:
+async def _deliver_summary(job: dict[str, Any], summary: str) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         raise RuntimeError("Telegram bot token is not configured")
-    filename = transcript_filename(title)
-    directory = Path(tempfile.mkdtemp(prefix="transcript-artifact-"))
-    artifact = directory / filename
-    artifact.write_text(transcript, encoding="utf-8")
-    try:
-        async with Bot(token=token) as bot:
-            if job.get("status_message_id"):
-                try:
-                    await bot.delete_message(chat_id=job["chat_id"], message_id=job["status_message_id"])
-                except Exception:
-                    LOG.debug("event=transcription_status_delete_skipped job_id=%s", job["id"], exc_info=True)
-            await send_summary(bot, job["chat_id"], summary)
-            with artifact.open("rb") as document:
-                await bot.send_document(
-                    chat_id=job["chat_id"], document=document, filename=filename,
-                    caption=transcription_ready_caption(ui_language, detected_language),
-                    read_timeout=120, write_timeout=120,
-                )
-    finally:
-        shutil.rmtree(directory, ignore_errors=True)
+    async with Bot(token=token) as bot:
+        if job.get("status_message_id"):
+            try:
+                await bot.delete_message(chat_id=job["chat_id"], message_id=job["status_message_id"])
+            except Exception:
+                LOG.debug("event=transcription_status_delete_skipped job_id=%s", job["id"], exc_info=True)
+        # Summary requests intentionally deliver only the summary. The full
+        # transcript remains exclusive to the dedicated transcription action.
+        await send_summary(bot, job["chat_id"], summary)
 
 
 @app.task(bind=True, name="transcription.process", max_retries=MAX_RETRIES, track_started=True)
@@ -236,18 +226,28 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
             audio_url, str(info.get("title") or "Transcript"), info.get("duration"),
             summarize=is_summary, summary_language=language,
         )
-        transcript = format_transcript(result)
-        detected_language = str(result.get("language") or "unknown")
         if is_summary:
             summary = result.get("summary")
             if not summary:
                 raise RuntimeError("The summarization service returned an empty summary")
-            asyncio.run(_deliver_summary(job, summary, transcript, str(result.get("title") or "Transcript"), language, detected_language))
+            asyncio.run(_deliver_summary(job, summary))
         else:
+            transcript = format_transcript(result)
+            detected_language = str(result.get("language") or "unknown")
             asyncio.run(_deliver(job, transcript, str(result.get("title") or "Transcript"), language, detected_language))
         activity_store.update_transcription_job(
             job_id, status="completed", processing_duration_seconds=time.perf_counter() - started,
         )
+        try:
+            monetization_store.settle(
+                job.get("entitlement_operation_id") or "",
+                duration_ms=int(float(result.get("duration") or 0) * 1000) if result.get("duration") else None,
+                processing_duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+        except Exception:
+            # Delivery is already complete. Never redeliver solely because the
+            # accounting database needs reconciliation.
+            LOG.exception("event=entitlement_settlement_deferred job_id=%s", job_id)
         asyncio.run(_refresh_queue_statuses())
         activity_store.update_event(job.get("activity_id"), status="completed", action="summarize" if is_summary else "transcribe", title=result.get("title"), duration_ms=int(float(result.get("duration") or 0) * 1000) if result.get("duration") else None)
         LOG.info("event=transcription_job_finished job_id=%s total_duration_seconds=%.2f", job_id, time.perf_counter() - started)
@@ -272,6 +272,10 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
             # after the longer cooldown and reset the Celery retry counter.
             return {"status": "retry_wait", "job_id": job_id}
         activity_store.update_transcription_job(job_id, status="failed", error=str(exc))
+        try:
+            monetization_store.release(job.get("entitlement_operation_id"), "transcription_permanent_failure")
+        except Exception:
+            LOG.exception("event=entitlement_release_deferred job_id=%s", job_id)
         asyncio.run(_refresh_queue_statuses())
         activity_store.update_event(job.get("activity_id"), status="failed", action="summarize" if job.get("job_type") == "summary" else "transcribe", error=display_error(exc, job["language"]))
         try:

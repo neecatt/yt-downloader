@@ -1,97 +1,48 @@
 # Downloader backend
 
-The backend runs the Telegram media downloader and its protected admin API.
-It supports video and audio downloads from YouTube, TikTok, Instagram,
-Facebook, X, and LinkedIn, with Telegram and cloud-storage delivery options.
+The backend powers the Telegram bot, media-processing workflows, AI
+transcription and summarization jobs, cloud delivery, and protected admin API.
 
-## Features
+## Responsibilities
 
-- Quality selection and MP3 conversion.
-- Download progress updates in Telegram.
-- Automatic delivery selection for large files.
-- Temporary cloud download links with cleanup.
-- PostgreSQL-backed activity tracking.
-- Protected admin endpoints for activity management and bot messaging.
+- Accept and validate links from supported media platforms.
+- Coordinate downloads, format conversion, and delivery.
+- Report progress and recover gracefully from temporary failures.
+- Queue transcription and summarization work for background processing.
+- Detect source language and produce readable, timestamped transcripts.
+- Convert long-form content into concise summaries with clear overviews and key
+  takeaways.
+- Track users, activity, jobs, credits, referrals, and feedback.
+- Enforce per-user and global capacity limits.
+- Provide authenticated data and management endpoints for the dashboard.
 
-## Project structure
+## Design principles
 
-- `main.py` — stable application entry point.
-- `bot/config/` — typed environment-backed settings grouped by concern.
-- `bot/runtime/` — Telegram callback state and delivery models.
-- `bot/queue/` — Celery broker configuration and application queue client.
-- `bot/platforms/` — platform media formatting, URL security, and rate limits.
-- `bot/services/` — yt-dlp and object-storage application services.
-- `bot/telegram/` — reusable Telegram presentation and keyboard helpers.
-- `bot/persistence/` — PostgreSQL activity, conversation, feedback, and job storage.
-- `bot/integrations/` — R2 cleanup, Modal transcription, and cookie integrations.
-- `bot/api/` — protected admin API.
-- `bot/transcription_tasks.py` — Celery transcription worker task.
-- `tests/` — backend test suite.
-- `Dockerfile` — container deployment configuration.
+The backend follows separation of concerns and dependency inversion: Telegram
+presentation, application workflows, domain rules, and infrastructure
+providers remain independently testable. External systems such as media
+extractors, object storage, AI inference, and messaging are treated as
+replaceable adapters rather than being woven through business logic.
 
-## Local development
+Expensive work runs outside the request path, while PostgreSQL keeps important
+user and job state durable across retries and deployments. Job processing uses
+explicit state transitions so queue behavior is observable and recoverable.
 
-From this directory, install the dependencies and provide the runtime settings
-through your local environment:
+Credit reservations, referral rewards, and worker callbacks are designed to be
+atomic and idempotent. The system tolerates at-least-once delivery semantics:
+failed work releases reserved resources, successful delivery settles the
+operation, and duplicate callbacks do not create duplicate charges or rewards.
 
-```sh
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-python main.py
-```
+## Reliability and safety
 
-Run the backend tests with:
-
-```sh
-python -m unittest discover -s tests -v
-```
-
-The application requires a Telegram bot token and the services selected for
-your deployment, such as PostgreSQL or cloud storage. Keep those values in
-your hosting provider's secret configuration rather than in the repository.
-
-## Speech-to-text queue and Modal worker
-
-Speech-to-text jobs use a dedicated Celery worker and private Redis broker.
-PostgreSQL stores the durable job record used by the admin panel. Create a
-second Railway service from this repository and set its start command to:
-
-```sh
-celery -A bot.transcription_tasks worker --loglevel=INFO --concurrency=1 -Q transcription
-```
-
-The bot and worker services must share the same Redis, database, Telegram, R2,
-and Modal variables. Only an opaque job ID is sent through Redis; media bytes
-and signed URLs are not placed in the queue.
-
-Deploy the Modal GPU function separately:
-
-```sh
-modal deploy backend/modal_transcriber.py
-```
-
-Required queue variables:
-
-- `REDIS_URL` — private Redis connection URL provided by Railway.
-- `TRANSCRIPTION_QUEUE_ENABLED=true`.
-
-Queue protection variables include `TRANSCRIPTION_QUEUE_MAX_SIZE` (default
-100), `TRANSCRIPTION_QUEUE_MAX_PER_USER` (default 3),
-`TRANSCRIPTION_ESTIMATED_SECONDS` (default 300),
-`TRANSCRIPTION_MAX_RETRIES` (default 2), and
-`CELERY_VISIBILITY_TIMEOUT_SECONDS` (default six hours). Keep the Celery
-worker at `--concurrency=1` and Modal at one GPU container while controlling
-costs is the priority.
-
-The bot calculates queue position from PostgreSQL and estimates wait time from
-completed transcription durations. The bot and worker must use the same
-`DATABASE_URL`. If the worker logs `event=transcription_job_missing`, verify
-that both Railway services point to the same PostgreSQL database, not only the
-same Redis instance.
-
-The format chooser also provides a separate summarize action. Summary jobs
-use the same queue, generate the transcript and summary in Modal, then send the
-summary followed by the complete timestamped transcript file. Configure the
-Modal summary model with `SUMMARY_MODEL`; the default is a small instruct model
-selected for lower latency.
+- Retry-aware background jobs with visible queue state.
+- Dedicated AI processing with progress feedback, language detection, and
+  resilient retry handling.
+- Durable audit history for credit and entitlement changes.
+- Protected admin operations with validation and authorization.
+- Defense-in-depth security through validation, authorization, rate limiting,
+  bounded resource usage, and audit trails.
+- Temporary cloud links for large results with cleanup.
+- Abuse controls for user, queue, and global capacity.
+- Structured operational logging for important product events.
+- Test coverage for normal flows, retries, concurrency, and failure paths.

@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from telegram import Bot
 from telegram.error import TelegramError
 
-from ..persistence import activity_store
+from ..persistence import activity_store, monetization_store
 from ..platforms.limits import SlidingWindowLimiter
 
 
@@ -73,6 +73,47 @@ def _username_from_payload(payload: dict[str, Any]) -> str:
     return username if username.startswith("@") else f"@{username}"
 
 
+_MONETIZATION_FIELDS = {
+    "enabled": "enabled", "premiumEnabled": "premium_enabled", "starterCredits": "starter_credits", "aiCreditCost": "ai_credit_cost", "dailyDownloadLimit": "daily_download_limit", "aiTrials": "ai_trials",
+    "referralInviterReward": "referral_inviter_reward", "referralInviteeReward": "referral_invitee_reward",
+    "referralRequiredDownloads": "referral_required_downloads", "referralMonthlyCap": "referral_monthly_cap",
+    "premiumPriceStars": "premium_price_stars", "staleReservationSeconds": "stale_reservation_seconds",
+    "costAlertFileMb": "cost_alert_file_mb", "rolloutPercent": "rollout_percent",
+    "rolloutUserIds": "rollout_user_ids",
+}
+
+
+def _monetization_patch(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    unknown = set(payload) - {*_MONETIZATION_FIELDS, "reason"}
+    if unknown:
+        raise HTTPException(status_code=400, detail="Unknown monetization setting")
+    reason = payload.get("reason")
+    if not isinstance(reason, str) or not 3 <= len(reason.strip()) <= 500:
+        raise HTTPException(status_code=400, detail="A reason of 3 to 500 characters is required")
+    changes = {}
+    for public_name, internal_name in _MONETIZATION_FIELDS.items():
+        if public_name in payload:
+            changes[internal_name] = payload[public_name]
+    if not changes:
+        raise HTTPException(status_code=400, detail="No monetization setting supplied")
+    ranges = {
+        "starterCredits": (0, 1000), "aiCreditCost": (0, 1000), "dailyDownloadLimit": (1, 500), "aiTrials": (0, 100), "referralInviterReward": (0, 1000),
+        "referralInviteeReward": (0, 1000), "referralRequiredDownloads": (1, 100),
+        "referralMonthlyCap": (0, 100), "premiumPriceStars": (1, 100000),
+        "staleReservationSeconds": (300, 86400), "costAlertFileMb": (1, 4096),
+        "rolloutPercent": (0, 100),
+    }
+    for boolean_name in ("enabled", "premiumEnabled"):
+        if boolean_name in payload and type(payload[boolean_name]) is not bool:
+            raise HTTPException(status_code=400, detail=f"{boolean_name} must be a boolean")
+    for name, (minimum, maximum) in ranges.items():
+        if name in payload and (type(payload[name]) is not int or not minimum <= payload[name] <= maximum):
+            raise HTTPException(status_code=400, detail=f"{name} is outside its safe range")
+    if "rolloutUserIds" in payload and (not isinstance(payload["rolloutUserIds"], list) or len(payload["rolloutUserIds"]) > 1000 or any(type(value) is not int or not 0 < value <= 9_223_372_036_854_775_807 for value in payload["rolloutUserIds"])):
+        raise HTTPException(status_code=400, detail="rolloutUserIds must contain at most 1000 valid Telegram IDs")
+    return changes, reason.strip()
+
+
 async def _send_to_chats(chat_ids: list[int], message: str) -> tuple[int, int]:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     if not token:
@@ -115,6 +156,7 @@ async def _send_direct_message(chat_id: int, message: str) -> bool:
 
 def create_app() -> FastAPI:
     activity_store.initialize()
+    monetization_store.initialize()
     app = FastAPI(title="Downloader Admin API", docs_url=None, redoc_url=None)
 
     @app.get("/health")
@@ -140,6 +182,147 @@ def create_app() -> FastAPI:
         except Exception:
             raise HTTPException(status_code=503, detail="Activity database unavailable") from None
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin/users")
+    async def users(request: Request, authorization: str | None = Header(default=None), q: str | None = Query(default=None, max_length=100), access: str | None = Query(default=None), page: int = Query(default=1, ge=1), page_size: int = Query(default=25, alias="pageSize", ge=1, le=100)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        if access not in {None, "free", "subscribed", "complimentary", "low_credit", "ai_exhausted"}:
+            raise HTTPException(status_code=400, detail="Invalid access filter")
+        try:
+            result = await asyncio.to_thread(
+                monetization_store.admin_query_users,
+                q=q.strip() if q else None, access=access, page=page, page_size=page_size,
+            )
+        except Exception:
+            raise HTTPException(status_code=503, detail="Account database unavailable") from None
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin/usage")
+    async def usage(request: Request, authorization: str | None = Header(default=None), days: int = Query(default=30, ge=1, le=365)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization): raise HTTPException(status_code=401, detail="Unauthorized")
+        try: result = await asyncio.to_thread(monetization_store.admin_usage, days)
+        except Exception: raise HTTPException(status_code=503, detail="Account database unavailable") from None
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin/credits")
+    async def credits(request: Request, authorization: str | None = Header(default=None), q: str | None = Query(default=None, max_length=100), page: int = Query(default=1, ge=1), page_size: int = Query(default=25, alias="pageSize", ge=1, le=100)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization): raise HTTPException(status_code=401, detail="Unauthorized")
+        try: result = await asyncio.to_thread(monetization_store.admin_credit_overview, q=q.strip() if q else None, page=page, page_size=page_size)
+        except Exception: raise HTTPException(status_code=503, detail="Account database unavailable") from None
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin/referrals")
+    async def referrals(request: Request, authorization: str | None = Header(default=None), status: str | None = Query(default=None), page: int = Query(default=1, ge=1), page_size: int = Query(default=25, alias="pageSize", ge=1, le=100)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization): raise HTTPException(status_code=401, detail="Unauthorized")
+        if status not in {None, "pending", "qualified", "rejected"}: raise HTTPException(status_code=400, detail="Invalid referral status")
+        try: result = await asyncio.to_thread(monetization_store.admin_referrals, status=status, page=page, page_size=page_size)
+        except Exception: raise HTTPException(status_code=503, detail="Account database unavailable") from None
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin/transactions")
+    async def transactions(request: Request, authorization: str | None = Header(default=None), q: str | None = Query(default=None, max_length=100), page: int = Query(default=1, ge=1), page_size: int = Query(default=25, alias="pageSize", ge=1, le=100)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization): raise HTTPException(status_code=401, detail="Unauthorized")
+        try: result = await asyncio.to_thread(monetization_store.admin_transactions, q=q.strip() if q else None, page=page, page_size=page_size)
+        except Exception: raise HTTPException(status_code=503, detail="Account database unavailable") from None
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin/settings/monetization")
+    async def monetization_settings(request: Request, authorization: str | None = Header(default=None)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        try:
+            result = await asyncio.to_thread(monetization_store.monetization_settings_dict)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Settings database unavailable") from None
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.patch("/admin/settings/monetization")
+    async def update_monetization_settings(request: Request, payload: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        try:
+            changes, reason = _monetization_patch(payload)
+            result = await asyncio.to_thread(monetization_store.update_monetization_settings, changes, reason=reason)
+        except HTTPException:
+            raise
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except Exception:
+            raise HTTPException(status_code=503, detail="Settings database unavailable") from None
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin/settings/monetization/history")
+    async def monetization_settings_history(request: Request, authorization: str | None = Header(default=None), limit: int = Query(default=100, ge=1, le=200)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        try:
+            history = await asyncio.to_thread(monetization_store.monetization_settings_history, limit)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Settings database unavailable") from None
+        return JSONResponse({"history": history}, headers={"Cache-Control": "no-store"})
+
+    @app.patch("/admin/users/{user_id}")
+    async def update_user(user_id: int, request: Request, payload: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        if user_id <= 0 or user_id > 9_223_372_036_854_775_807:
+            raise HTTPException(status_code=400, detail="Invalid Telegram user ID")
+        unknown = set(payload) - {"creditAdjustment", "aiTrials", "complimentary", "reason"}
+        if unknown:
+            raise HTTPException(status_code=400, detail="Unknown entitlement field")
+        reason = payload.get("reason")
+        if (not isinstance(reason, str) or not 3 <= len(reason.strip()) <= 500
+                or any(ord(character) < 32 and character not in "\t\n\r" for character in reason)):
+            raise HTTPException(status_code=400, detail="A reason of 3 to 500 characters is required")
+        adjustment = payload.get("creditAdjustment")
+        ai_trials = payload.get("aiTrials")
+        complimentary = payload.get("complimentary")
+        if adjustment is not None and (type(adjustment) is not int or not -100_000 <= adjustment <= 100_000):
+            raise HTTPException(status_code=400, detail="Credit adjustment must be an integer from -100000 to 100000")
+        if adjustment == 0:
+            raise HTTPException(status_code=400, detail="Credit adjustment cannot be zero")
+        if ai_trials is not None and (type(ai_trials) is not int or not 0 <= ai_trials <= 100):
+            raise HTTPException(status_code=400, detail="AI trials must be an integer from 0 to 100")
+        if complimentary is not None and type(complimentary) is not bool:
+            raise HTTPException(status_code=400, detail="Complimentary access must be true or false")
+        if adjustment is None and ai_trials is None and complimentary is None:
+            raise HTTPException(status_code=400, detail="No entitlement change supplied")
+        try:
+            updated = await asyncio.to_thread(
+                monetization_store.admin_update_user, user_id,
+                credit_adjustment=adjustment, ai_trials=ai_trials,
+                complimentary=complimentary, reason=reason.strip(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        except Exception:
+            raise HTTPException(status_code=503, detail="Account database unavailable") from None
+        if not updated:
+            raise HTTPException(status_code=404, detail="User not found")
+        return JSONResponse({"user": updated}, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin/users/{user_id}/history")
+    async def user_history(user_id: int, request: Request, authorization: str | None = Header(default=None), limit: int = Query(default=100, ge=1, le=200)) -> JSONResponse:
+        _rate_limit(request)
+        if not _authorized(authorization):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        if user_id <= 0 or user_id > 9_223_372_036_854_775_807:
+            raise HTTPException(status_code=400, detail="Invalid Telegram user ID")
+        try:
+            history = await asyncio.to_thread(monetization_store.admin_history, user_id, limit)
+        except Exception:
+            raise HTTPException(status_code=503, detail="Account database unavailable") from None
+        return JSONResponse({"history": history}, headers={"Cache-Control": "no-store"})
 
     @app.delete("/admin/activity")
     async def delete_activity(request: Request, payload: dict[str, Any] = Body(...), authorization: str | None = Header(default=None)) -> JSONResponse:

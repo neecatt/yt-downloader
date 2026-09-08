@@ -25,7 +25,8 @@ try:
     from .bot.platforms.media import display_error, format_duration, progress_text, safe_filename
     from .bot.platforms.routing import activity_platform, is_x_photo_link, should_analyze_media_type
     from .bot.services import downloader, storage
-    from .bot.telegram import callbacks, commands, delivery, keyboards, messages
+    from .bot.telegram import callbacks, commands, delivery, keyboards, messages, monetization
+    from .bot.persistence import monetization_store
     from .bot.observability import configure_logging, log_timing
     from .bot.integrations.transcription import (
         transcription_is_configured,
@@ -47,7 +48,8 @@ except ImportError:  # Supports running `python main.py` in backend.
     from bot.platforms.media import display_error, format_duration, progress_text, safe_filename
     from bot.platforms.routing import activity_platform, is_x_photo_link, should_analyze_media_type
     from bot.services import downloader, storage
-    from bot.telegram import callbacks, commands, delivery, keyboards, messages
+    from bot.telegram import callbacks, commands, delivery, keyboards, messages, monetization
+    from bot.persistence import monetization_store
     from bot.observability import configure_logging, log_timing
     from bot.integrations.transcription import (
         transcription_is_configured,
@@ -87,10 +89,11 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    PreCheckoutQueryHandler,
     filters,
 )
 
-CALLBACK_QUERY_PATTERN = r"^(?:d|m|p|t|s|lang)\|"
+CALLBACK_QUERY_PATTERN = r"^(?:d|m|p|t|s|lang|acct)\|"
 
 LOG = logging.getLogger("downloader_bot")
 
@@ -198,13 +201,17 @@ def allow_analysis(user_id: int) -> bool:
 
 
 def allow_download(user_id: int) -> bool:
+    try:
+        daily_limit = monetization_store.monetization_settings().daily_download_limit
+    except Exception:
+        daily_limit = DOWNLOADS_PER_USER_PER_DAY
     return DOWNLOAD_LIMITER.allow(
         (user_id, "hour"),
         limit=DOWNLOADS_PER_USER_PER_HOUR,
         window_seconds=3600,
     ) and DOWNLOAD_LIMITER.allow(
         (user_id, "day"),
-        limit=DOWNLOADS_PER_USER_PER_DAY,
+        limit=daily_limit,
         window_seconds=86400,
     ) and DOWNLOAD_LIMITER.allow(
         "global",
@@ -265,12 +272,14 @@ def prune_pending_deliveries() -> None:
     except ImportError:
         from bot.runtime.state import prune_pending_deliveries as expire_pending
     for pending in expire_pending(ttl_seconds=PENDING_DELIVERY_TTL_SECONDS):
+        release_entitlement(pending.entitlement_operation_id, "delivery_choice_expired")
         shutil.rmtree(pending.directory, ignore_errors=True)
 
 
 def save_pending_delivery(
     *, filename: Path, directory: Path, update: Update, info: dict[str, Any],
     extension: str, fmt: str, size_bytes: int, activity_id: str | None,
+    entitlement_operation_id: str | None = None,
 ) -> str:
     prune_pending_deliveries()
     user = update.effective_user
@@ -285,6 +294,7 @@ def save_pending_delivery(
         fmt=fmt,
         size_bytes=size_bytes,
         activity_id=activity_id,
+        entitlement_operation_id=entitlement_operation_id,
         created_at=time.monotonic(),
     )
     return key
@@ -345,8 +355,48 @@ def _record_contact(update: Update) -> None:
             display_name=getattr(user, "full_name", None) if user else None,
             chat_type=getattr(chat, "type", None),
         )
+        if user:
+            monetization.ensure_update_account(update)
     except Exception:
         LOG.warning("Could not record bot contact", exc_info=True)
+
+
+def reserve_entitlement(update: Update, kind: str, idempotency_key: str, activity_id: str | None = None):
+    user = update.effective_user
+    if not user:
+        return None
+    try:
+        monetization.ensure_update_account(update)
+        return monetization_store.reserve(user_id=user.id, kind=kind, idempotency_key=idempotency_key, activity_id=activity_id)
+    except monetization_store.EntitlementUnavailable:
+        return None
+    except Exception:
+        LOG.exception("event=entitlement_reservation_failed user_id=%s kind=%s", user.id, kind)
+        if not monetization_store.monetization_settings().enabled:
+            return monetization_store.Reservation(secrets.token_hex(16), "bypassed", kind, user.id)
+        return None
+
+
+def settle_entitlement(operation_id: str | None, **kwargs: Any) -> dict[str, Any]:
+    return monetization_store.settle(operation_id or "", **kwargs)
+
+
+def release_entitlement(operation_id: str | None, reason: str) -> bool:
+    try:
+        return monetization_store.release(operation_id, reason)
+    except Exception:
+        LOG.exception("event=entitlement_release_deferred operation_id=%s", operation_id)
+        return False
+
+
+def touch_entitlement(operation_id: str | None) -> None:
+    monetization_store.touch(operation_id)
+
+
+attach_referral = monetization_store.attach_referral
+link_transcription_job = monetization_store.link_transcription_job
+monetization_settings = monetization_store.monetization_settings
+access_keyboard = monetization.access_keyboard
 
 
 def _record_chat_message(update: Update, text: str) -> None:
@@ -552,6 +602,12 @@ async def pending_delivery_cleanup_loop() -> None:
     interval = min(60, max(30, PENDING_DELIVERY_TTL_SECONDS // 3))
     while True:
         prune_pending_deliveries()
+        try:
+            released = monetization_store.release_stale()
+            if released:
+                LOG.info("event=stale_entitlements_reconciled count=%s", released)
+        except Exception:
+            LOG.warning("event=stale_entitlement_recovery_failed", exc_info=True)
         await asyncio.sleep(interval)
 
 
@@ -603,10 +659,12 @@ async def post_init(application: Application) -> None:
         BotCommand("help", "Show usage instructions"),
         BotCommand("download", "Download a video from a link"),
         BotCommand("transcribe", "Transcribe speech from a video link"),
-        BotCommand("summarize", "Summarize a video and send its transcript"),
+        BotCommand("summarize", "Summarize a video"),
         BotCommand("feedback", "Send feedback"),
         BotCommand("support", "Support the bot"),
         BotCommand("settings", "Change language"),
+        BotCommand("credits", "View credit balance"),
+        BotCommand("invite", "Invite friends and earn credits"),
     ])
     PENDING_DELIVERY_CLEANUP_TASK = asyncio.create_task(
         pending_delivery_cleanup_loop(), name="pending-delivery-cleanup"
@@ -644,6 +702,7 @@ async def post_shutdown(application: Application) -> None:
     PENDING_DELIVERY_CLEANUP_TASK = None
     TRANSCRIPTION_RECOVERY_TASK = None
     for pending in list(PENDING_DELIVERIES.values()):
+        release_entitlement(pending.entitlement_operation_id, "application_shutdown")
         discard_pending_delivery(pending)
     PENDING_DELIVERIES.clear()
 
@@ -674,6 +733,7 @@ def main() -> None:
     except ImportError:
         from bot.persistence import activity_store
     activity_store.initialize()
+    monetization_store.initialize()
     start_admin_api()
     LOG.info(
         "event=application_starting delivery_mode=%s max_workers=%s max_download_mb=%s telegram_limit_mb=%s r2_configured=%s admin_api=%s",
@@ -694,6 +754,14 @@ def main() -> None:
     application.add_handler(CommandHandler("download", download_command))
     application.add_handler(CommandHandler("transcribe", transcribe_command))
     application.add_handler(CommandHandler("summarize", summarize_command))
+    application.add_handler(CommandHandler("credits", monetization.credits))
+    application.add_handler(CommandHandler("invite", monetization.invite))
+    application.add_handler(CommandHandler("premium", monetization.premium))
+    application.add_handler(CommandHandler("terms", monetization.terms))
+    application.add_handler(CommandHandler("paysupport", monetization.paysupport))
+    application.add_handler(PreCheckoutQueryHandler(monetization.pre_checkout))
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, monetization.successful_payment))
+    application.add_handler(MessageHandler(monetization.REFUNDED_PAYMENT, monetization.refunded_payment))
     application.add_handler(CallbackQueryHandler(button_handler, pattern=CALLBACK_QUERY_PATTERN))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     LOG.info("event=telegram_polling_start")

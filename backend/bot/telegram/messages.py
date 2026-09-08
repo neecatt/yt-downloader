@@ -17,7 +17,7 @@ def _status_message_id(status: Any) -> int | None:
     return getattr(getattr(status, "message", None), "message_id", None)
 
 
-async def run_transcription(update: Any, status: Any, url: str, language: str, *, activity_id: str | None = None, job_type: str = "transcript") -> None:
+async def run_transcription(update: Any, status: Any, url: str, language: str, *, activity_id: str | None = None, job_type: str = "transcript", entitlement_operation_id: str | None = None) -> None:
     app = _app()
 
     async def edit(text: str, **kwargs: Any) -> None:
@@ -36,9 +36,11 @@ async def run_transcription(update: Any, status: Any, url: str, language: str, *
             user_id=user.id if user else 0, source_url=url, language=language,
             status_message_id=_status_message_id(status),
             job_type=job_type,
+            entitlement_operation_id=entitlement_operation_id,
         )
         if not job_id:
             raise RuntimeError("Could not create transcription job")
+        app.link_transcription_job(entitlement_operation_id, job_id)
         app.enqueue_transcription(job_id)
     except Exception as exc:
         app.LOG.warning("event=transcription_enqueue_failed error=%s", app.safe_log_error(exc), exc_info=True)
@@ -54,6 +56,7 @@ async def run_transcription(update: Any, status: Any, url: str, language: str, *
             app._update_activity(activity_id, status="started", action=job_type)
             await edit(app.tr(language, "transcription_saved_for_retry"))
         else:
+            app.release_entitlement(entitlement_operation_id, "job_creation_failed")
             app._update_activity(activity_id, status="failed", action=job_type, error=app.display_error(exc, language))
             await edit(app.tr(language, "transcription_queue_unavailable"))
         return
