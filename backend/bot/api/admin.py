@@ -219,6 +219,7 @@ def create_app() -> FastAPI:
     async def referrals(request: Request, authorization: str | None = Header(default=None), status: str | None = Query(default=None), page: int = Query(default=1, ge=1), page_size: int = Query(default=25, alias="pageSize", ge=1, le=100)) -> JSONResponse:
         _rate_limit(request)
         if not _authorized(authorization): raise HTTPException(status_code=401, detail="Unauthorized")
+        status = status or None
         if status not in {None, "pending", "qualified", "rejected"}: raise HTTPException(status_code=400, detail="Invalid referral status")
         try: result = await asyncio.to_thread(monetization_store.admin_referrals, status=status, page=page, page_size=page_size)
         except Exception: raise HTTPException(status_code=503, detail="Account database unavailable") from None

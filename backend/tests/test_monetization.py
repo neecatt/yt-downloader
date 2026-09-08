@@ -502,6 +502,13 @@ class AdminEntitlementApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         update.assert_called_once_with({"daily_download_limit": 15}, reason="set daily cap")
 
+    def test_referrals_endpoint_treats_empty_status_as_no_filter(self):
+        headers = {"Authorization": "Bearer test-admin-token"}
+        with patch.object(store, "admin_referrals", return_value={"referrals": [], "page": 1, "pageSize": 25, "total": 0}) as referrals:
+            response = self.client.get("/admin/referrals?status=&page=1", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        referrals.assert_called_once_with(status=None, page=1, page_size=25)
+
 
 class EntitlementFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
