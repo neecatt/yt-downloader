@@ -1,30 +1,20 @@
-# Downloader admin dashboard
+# Admin dashboard
 
-The frontend is a separate Next.js application for managing the downloader.
-It provides a private view of bot activity and controlled messaging tools.
+The admin dashboard is a private operational interface for understanding and
+managing the Telegram downloader.
 
-## Pages
+## Dashboard areas
 
-- Activity — review download history and remove selected logs.
-- Broadcast — send a message to recorded private bot contacts.
-- Message user — send a message to a specific Telegram username.
+- Usage: visual trends for downloads, AI processing, users, and referrals.
+- Activity: searchable and paginated bot activity.
+- Users: account balances, referral status, AI usage, and access controls.
+- Credits: earned, spent, reserved, and available credits.
+- Transactions: a separate searchable audit-log table.
+- Broadcast: controlled communication with bot users.
+- Settings: runtime controls for launch limits and product experiments.
 
-## Project structure
+## Interface principles
 
-- `app/` — pages and server-side API routes.
-- `components/` — dashboard, navigation, login, and messaging interfaces.
-- `lib/` — authentication, activity, and backend service helpers.
-
-## Local development
-
-```sh
-npm install
-npm run dev
-```
-
-Open `http://localhost:3000` after configuring the dashboard environment for
-your local backend. Production deployments can run this directory as a
-separate service from the backend.
-
-The dashboard keeps backend credentials on the server and uses authenticated
-sessions for browser access.
+The dashboard separates visual trends from dense transaction records so each
+screen remains easy to scan. Sensitive backend credentials stay server-side,
+and manual account changes require an audit reason.
