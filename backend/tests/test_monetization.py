@@ -238,6 +238,22 @@ class ProductDefaultsTests(unittest.TestCase):
         self.assertIn("starter_grant", sql)
         self.assertIn("telegram_payment_charge_id TEXT PRIMARY KEY", sql)
         self.assertIn("CREATE TABLE IF NOT EXISTS monetization_config", sql)
+        settings_insert = next(
+            params for statement, params in statements
+            if statement.startswith("INSERT INTO monetization_config")
+        )
+        self.assertEqual(len(settings_insert), 18)
+
+    def test_schema_initialization_does_not_hide_database_failures(self):
+        class Database:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def execute(self, _sql, _params=()):
+                raise RuntimeError("database migration failed")
+
+        with patch.object(store, "enabled", return_value=True), patch.object(store, "_connect", return_value=Database()):
+            with self.assertRaisesRegex(RuntimeError, "Monetization database initialization failed"):
+                store.initialize()
 
 
 class ReferralDatabase:
