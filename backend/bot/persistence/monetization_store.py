@@ -788,6 +788,7 @@ def admin_update_user(user_id: int, *, credit_adjustment: int | None = None, cre
         row = connection.execute(f"SELECT {_ACCOUNT_COLUMNS} FROM user_accounts WHERE telegram_user_id=%s FOR UPDATE", (user_id,)).fetchone()
         if not row: return None
         account = _row_to_account(row)
+        complimentary_granted = bool(complimentary is True and not account["complimentary"])
         if credit_amount is not None and credit_mode not in {"add", "set"}:
             raise ValueError("Credit mode must be add or set")
         if credit_amount is not None and credit_adjustment is not None:
@@ -820,6 +821,7 @@ def admin_update_user(user_id: int, *, credit_adjustment: int | None = None, cre
         connection.execute("INSERT INTO entitlement_audit VALUES (%s,%s,'admin_entitlement_update',%s,%s,%s,%s)", (uuid.uuid4().hex, user_id, reason, actor, details, now))
         row = connection.execute(f"SELECT {_ACCOUNT_COLUMNS} FROM user_accounts WHERE telegram_user_id=%s", (user_id,)).fetchone()
     account = _row_to_account(row)
+    account["_complimentary_granted"] = complimentary_granted
     for key in ("subscription_expires_at", "created_at", "updated_at", "last_seen_at"):
         account[key] = account[key].isoformat() if account[key] else None
     return account
@@ -843,36 +845,45 @@ def admin_history(user_id: int, limit: int = 100) -> list[dict[str, Any]]:
     return [{"type":r[0],"reason":r[1],"actor":r[2],"details":r[3],"createdAt":r[4].isoformat()} for r in rows]
 
 
-def admin_usage(days: int = 30) -> dict[str, Any]:
+def admin_usage(days: int = 30, excluded_usernames: list[str] | None = None) -> dict[str, Any]:
     """Return aggregate product usage for the private operations dashboard."""
     if not enabled():
         return {"totals": {}, "daily": []}
     days = min(365, max(1, int(days)))
     cutoff = _now() - timedelta(days=days)
+    excluded = sorted({value.strip().lstrip("@").lower() for value in (excluded_usernames or []) if value.strip()})
     with _connect() as connection:
         totals = connection.execute("""
+            WITH excluded AS (SELECT UNNEST(%s::TEXT[]) AS username)
             SELECT
-              (SELECT COUNT(*) FROM user_accounts),
-              (SELECT COUNT(*) FROM user_accounts WHERE created_at >= %s),
+              (SELECT COUNT(*) FROM user_accounts u WHERE NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username=LOWER(LTRIM(COALESCE(u.telegram_username,''),'@')))),
+              (SELECT COUNT(*) FROM user_accounts u WHERE u.created_at >= %s AND NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username=LOWER(LTRIM(COALESCE(u.telegram_username,''),'@')))),
               COUNT(*) FILTER (WHERE o.status='settled'),
               COUNT(*) FILTER (WHERE o.status='settled' AND o.kind='download'),
               COUNT(*) FILTER (WHERE o.status='settled' AND o.kind='ai'),
               COUNT(*) FILTER (WHERE o.status='settled' AND a.action='transcribe'),
               COUNT(*) FILTER (WHERE o.status='settled' AND a.action='summarize'),
-              COALESCE((SELECT SUM(delta) FROM credit_ledger WHERE delta > 0 AND created_at >= %s), 0),
-              COALESCE((SELECT SUM(-delta) FROM credit_ledger WHERE delta < 0 AND created_at >= %s), 0),
-              (SELECT COUNT(*) FROM referrals WHERE status='qualified' AND qualified_at >= %s)
+              COALESCE((SELECT SUM(l.delta) FROM credit_ledger l JOIN user_accounts lu ON lu.telegram_user_id=l.telegram_user_id WHERE l.delta > 0 AND l.created_at >= %s AND NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username=LOWER(LTRIM(COALESCE(lu.telegram_username,''),'@')))), 0),
+              COALESCE((SELECT SUM(-l.delta) FROM credit_ledger l JOIN user_accounts lu ON lu.telegram_user_id=l.telegram_user_id WHERE l.delta < 0 AND l.created_at >= %s AND NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username=LOWER(LTRIM(COALESCE(lu.telegram_username,''),'@')))), 0),
+              (SELECT COUNT(*) FROM referrals r JOIN user_accounts ri ON ri.telegram_user_id=r.inviter_user_id JOIN user_accounts re ON re.telegram_user_id=r.invited_user_id WHERE r.status='qualified' AND r.qualified_at >= %s AND NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username IN (LOWER(LTRIM(COALESCE(ri.telegram_username,''),'@')),LOWER(LTRIM(COALESCE(re.telegram_username,''),'@')))))
             FROM entitlement_operations o
             LEFT JOIN activity_events a ON a.id=o.activity_id
+            LEFT JOIN user_accounts ou ON ou.telegram_user_id=o.telegram_user_id
             WHERE o.created_at >= %s
-        """, (cutoff, cutoff, cutoff, cutoff, cutoff)).fetchone()
+              AND NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username=LOWER(LTRIM(COALESCE(a.telegram_username,ou.telegram_username,''),'@')))
+        """, (excluded, cutoff, cutoff, cutoff, cutoff, cutoff)).fetchone()
         daily_rows = connection.execute("""
+            WITH excluded AS (SELECT UNNEST(%s::TEXT[]) AS username)
             SELECT DATE(o.created_at), COUNT(*) FILTER (WHERE o.status='settled'),
                    COUNT(*) FILTER (WHERE o.status='settled' AND o.kind='ai'),
                    COUNT(*) FILTER (WHERE o.status='settled' AND a.action='summarize')
-            FROM entitlement_operations o LEFT JOIN activity_events a ON a.id=o.activity_id
-            WHERE o.created_at >= %s GROUP BY DATE(o.created_at) ORDER BY DATE(o.created_at)
-        """, (cutoff,)).fetchall()
+            FROM entitlement_operations o
+            LEFT JOIN activity_events a ON a.id=o.activity_id
+            LEFT JOIN user_accounts ou ON ou.telegram_user_id=o.telegram_user_id
+            WHERE o.created_at >= %s
+              AND NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username=LOWER(LTRIM(COALESCE(a.telegram_username,ou.telegram_username,''),'@')))
+            GROUP BY DATE(o.created_at) ORDER BY DATE(o.created_at)
+        """, (excluded, cutoff)).fetchall()
     keys = ("users", "newUsers", "successfulOperations", "downloads", "aiRequests", "transcriptions", "summaries", "creditsEarned", "creditsSpent", "qualifiedReferrals")
     return {"totals": dict(zip(keys, (int(value or 0) for value in totals))), "daily": [
         {"date": row[0].isoformat(), "successfulOperations": int(row[1] or 0), "aiRequests": int(row[2] or 0), "summaries": int(row[3] or 0)}

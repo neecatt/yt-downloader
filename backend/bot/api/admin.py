@@ -200,10 +200,11 @@ def create_app() -> FastAPI:
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
     @app.get("/admin/usage")
-    async def usage(request: Request, authorization: str | None = Header(default=None), days: int = Query(default=30, ge=1, le=365)) -> JSONResponse:
+    async def usage(request: Request, authorization: str | None = Header(default=None), days: int = Query(default=30, ge=1, le=365), exclude_users: str | None = Query(default=None, alias="excludeUsers", max_length=1700)) -> JSONResponse:
         _rate_limit(request)
         if not _authorized(authorization): raise HTTPException(status_code=401, detail="Unauthorized")
-        try: result = await asyncio.to_thread(monetization_store.admin_usage, days)
+        excluded_usernames = _excluded_usernames(exclude_users)
+        try: result = await asyncio.to_thread(monetization_store.admin_usage, days, excluded_usernames)
         except Exception: raise HTTPException(status_code=503, detail="Account database unavailable") from None
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
@@ -323,6 +324,13 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="Account database unavailable") from None
         if not updated:
             raise HTTPException(status_code=404, detail="User not found")
+        complimentary_granted = bool(updated.pop("_complimentary_granted", False))
+        if complimentary_granted:
+            chat_id = updated.get("chat_id") or updated["user_id"]
+            await _send_direct_message(
+                int(chat_id),
+                "🎁 Good news! You’ve been granted complimentary unlimited access by the creator.\n\nEnjoy unlimited credits and AI features — one of the perks of being a friend of the creator 😊\n\nThe bot’s normal fair-use and capacity limits still apply.",
+            )
         return JSONResponse({"user": updated}, headers={"Cache-Control": "no-store"})
 
     @app.get("/admin/users/{user_id}/history")
