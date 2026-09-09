@@ -482,6 +482,16 @@ class AdminEntitlementApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         update.assert_called_once_with(7, credit_adjustment=None, credit_mode="set", credit_amount=30, ai_trials=None, complimentary=None, reason="Admin entitlement update")
 
+    def test_complimentary_grant_notifies_user(self):
+        headers = {"Authorization": "Bearer test-admin-token"}
+        updated = {"user_id": 7, "chat_id": 7, "_complimentary_granted": True}
+        with patch.object(store, "admin_update_user", return_value=updated), patch("backend.bot.api.admin._send_direct_message", new=AsyncMock(return_value=True)) as send:
+            response = self.client.patch("/admin/users/7", headers=headers, json={"complimentary": True})
+        self.assertEqual(response.status_code, 200)
+        send.assert_awaited_once()
+        self.assertIn("complimentary unlimited access", send.await_args.args[1])
+        self.assertNotIn("_complimentary_granted", response.json()["user"])
+
     def test_entitlement_update_rejects_unknown_fields_zero_adjustments_and_controls(self):
         headers = {"Authorization": "Bearer test-admin-token"}
         self.assertEqual(self.client.patch("/admin/users/7", headers=headers, json={"creditAdjustment": 1, "reason": "manual grant", "admin": True}).status_code, 400)
@@ -528,6 +538,15 @@ class AdminEntitlementApiTests(unittest.TestCase):
             response = self.client.get("/admin/referrals?status=&page=1", headers=headers)
         self.assertEqual(response.status_code, 200)
         referrals.assert_called_once_with(status=None, page=1, page_size=25)
+
+    def test_usage_endpoint_normalizes_and_validates_excluded_usernames(self):
+        headers = {"Authorization": "Bearer test-admin-token"}
+        with patch.object(store, "admin_usage", return_value={"totals": {}, "daily": []}) as usage:
+            response = self.client.get("/admin/usage?days=30&excludeUsers=@Alice,bob_123", headers=headers)
+        self.assertEqual(response.status_code, 200)
+        usage.assert_called_once_with(30, ["alice", "bob_123"])
+        response = self.client.get("/admin/usage?excludeUsers=bad", headers=headers)
+        self.assertEqual(response.status_code, 400)
 
 
 class EntitlementFlowTests(unittest.IsolatedAsyncioTestCase):
