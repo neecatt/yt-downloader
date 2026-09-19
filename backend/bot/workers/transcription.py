@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from telegram import Bot
 
 from ..queue.config import app
-from ..queue.recovery import retryable, retry_delay_seconds
+from ..queue.recovery import retryable, retry_delay_for_error
 from ..persistence import activity_store, monetization_store
 from ..i18n import tr
 from ..platforms.media import display_error
@@ -256,7 +256,9 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
         if retryable(exc):
             retry_number = self.request.retries + 1
             exhausted = self.request.retries >= MAX_RETRIES
-            countdown = RETRY_AFTER_MAX_SECONDS if exhausted else retry_delay_seconds(self.request.retries)
+            countdown = RETRY_AFTER_MAX_SECONDS if exhausted else retry_delay_for_error(
+                exc, self.request.retries, RETRY_AFTER_MAX_SECONDS,
+            )
             next_attempt = datetime.now(timezone.utc) + timedelta(seconds=countdown)
             activity_store.update_transcription_job(job_id, status="queued", error=str(exc), next_attempt_at=next_attempt)
             asyncio.run(_refresh_queue_statuses())
