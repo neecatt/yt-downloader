@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import unittest
 
-from backend.bot.queue.recovery import retry_delay_for_error, retry_delay_seconds, retryable
+from backend.bot.queue.recovery import retry_delay_seconds, retryable
 from backend.bot.telegram.status import active_job_status_text
 
 
@@ -22,13 +22,6 @@ class QueueRecoveryTests(unittest.TestCase):
         self.assertEqual(retry_delay_seconds(1), 20)
         self.assertEqual(retry_delay_seconds(4), 160)
         self.assertEqual(retry_delay_seconds(99), 300)
-
-    def test_youtube_bot_check_uses_long_cooldown_immediately(self):
-        challenge = RuntimeError("[youtube] Sign in to confirm you’re not a bot")
-        self.assertTrue(retryable(challenge))
-        self.assertEqual(retry_delay_for_error(challenge, 0, 900), 900)
-        self.assertEqual(retry_delay_for_error(challenge, 1, 900), 900)
-        self.assertEqual(retry_delay_for_error(RuntimeError("network timeout"), 0, 900), 10)
 
 
 class QueueStatusNotificationTests(unittest.TestCase):

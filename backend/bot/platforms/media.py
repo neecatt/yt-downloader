@@ -48,12 +48,6 @@ def progress_text(progress: dict[str, Any], fmt: str, language: str = "en") -> s
     return f"{tr(language, 'progress_downloading', fmt=fmt)}\n{details}"
 
 
-def is_youtube_bot_challenge(exc: Exception) -> bool:
-    """Recognize YouTube's temporary access check without matching normal login errors."""
-    text = str(exc).lower()
-    return "sign in to confirm" in text and "not a bot" in text
-
-
 def display_error(exc: Exception, language: str = "en") -> str:
     text = str(exc).lower()
     if (

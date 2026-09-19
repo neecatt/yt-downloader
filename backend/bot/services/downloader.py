@@ -11,7 +11,6 @@ from typing import Any, Callable
 import yt_dlp
 
 from ..observability import log_timing
-from ..platforms.media import is_youtube_bot_challenge
 from ..platforms.routing import is_image_or_carousel_info
 from ..platforms.security import safe_log_error, safe_log_url, validate_remote_url
 
@@ -123,15 +122,6 @@ def download(config: DownloaderConfig, url: str, fmt: str, tmpdir: str, progress
             return info, filename, extension
         except Exception as exc:
             LOG.warning("event=download_attempt_failed attempt=%s format=%s error=%s", attempt + 1, fmt, safe_log_error(exc))
-            # An identical request from the same IP/session two seconds later is
-            # unlikely to clear an access check. Let durable jobs cool down.
-            if is_youtube_bot_challenge(exc):
-                LOG.warning(
-                    "event=youtube_access_check provider_configured=%s cookies_configured=%s proxy_configured=%s js_runtime_configured=%s",
-                    bool(config.po_provider_url), bool(config.cookies_file), bool(config.proxy),
-                    bool(config.js_runtime),
-                )
-                raise
             if attempt == 1:
                 raise
             if "403" in str(exc):
