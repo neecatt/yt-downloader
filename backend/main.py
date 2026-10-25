@@ -61,7 +61,7 @@ try:
         validate_donation_url,
         validate_remote_url,
     )
-    from .bot.i18n import language_keyboard, normalize_language, tr
+    from .bot.i18n import SUPPORTED_LANGUAGES, bot_commands, language_keyboard, normalize_language, tr
 except ImportError:  # Supports running `python main.py` in backend.
     from bot.integrations.cookies import prepare_cookie_file as _prepare_cookie_file
     from bot.platforms.media import display_error, format_duration, progress_text, safe_filename
@@ -84,9 +84,10 @@ except ImportError:  # Supports running `python main.py` in backend.
         validate_donation_url,
         validate_remote_url,
     )
-    from bot.i18n import language_keyboard, normalize_language, tr
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+    from bot.i18n import SUPPORTED_LANGUAGES, bot_commands, language_keyboard, normalize_language, tr
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -617,18 +618,15 @@ async def transcription_recovery_loop() -> None:
 async def post_init(application: Application) -> None:
     global R2_CLEANUP_TASK, PENDING_DELIVERY_CLEANUP_TASK, TRANSCRIPTION_RECOVERY_TASK
     LOG.info("Bot started with %s download worker(s)", MAX_WORKERS)
-    await application.bot.set_my_commands([
-        BotCommand("start", "Show the welcome screen"),
-        BotCommand("help", "Show usage instructions"),
-        BotCommand("download", "Download a video from a link"),
-        BotCommand("transcribe", "Transcribe speech from a video link"),
-        BotCommand("summarize", "Summarize a video"),
-        BotCommand("feedback", "Send feedback"),
-        BotCommand("support", "Support the bot"),
-        BotCommand("settings", "Change language"),
-        BotCommand("credits", "View credit balance"),
-        BotCommand("invite", "Invite friends and earn credits"),
-    ])
+    await application.bot.set_my_commands(bot_commands("en"))
+    # Telegram shows these menus to users whose app language matches.
+    for language in SUPPORTED_LANGUAGES:
+        if language == "en":
+            continue
+        try:
+            await application.bot.set_my_commands(bot_commands(language), language_code=language)
+        except TelegramError:
+            LOG.warning("event=command_menu_localization_failed language=%s", language, exc_info=True)
     PENDING_DELIVERY_CLEANUP_TASK = asyncio.create_task(
         pending_delivery_cleanup_loop(), name="pending-delivery-cleanup"
     )

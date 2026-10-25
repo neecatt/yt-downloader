@@ -227,6 +227,28 @@ _TEXT["az"].update({
 })
 
 
+# Command menu descriptions are limited by Telegram to 256 characters.
+_TEXT["en"].update({
+    "cmd_start": "Show the welcome screen", "cmd_help": "Show usage instructions",
+    "cmd_download": "Download a video from a link", "cmd_transcribe": "Transcribe speech from a video link",
+    "cmd_summarize": "Summarize a video", "cmd_feedback": "Send feedback", "cmd_support": "Support the bot",
+    "cmd_settings": "Change language", "cmd_credits": "View credit balance", "cmd_invite": "Invite friends and earn credits",
+})
+_TEXT["ru"].update({
+    "cmd_start": "Показать приветствие", "cmd_help": "Как пользоваться ботом",
+    "cmd_download": "Скачать видео по ссылке", "cmd_transcribe": "Расшифровать речь из видео",
+    "cmd_summarize": "Краткое содержание видео", "cmd_feedback": "Отправить отзыв", "cmd_support": "Поддержать бота",
+    "cmd_settings": "Сменить язык", "cmd_credits": "Посмотреть баланс", "cmd_invite": "Пригласить друзей и получить кредиты",
+})
+_TEXT["az"].update({
+    "cmd_start": "Salamlama ekranını göstər", "cmd_help": "İstifadə qaydaları",
+    "cmd_download": "Linkdən video yüklə", "cmd_transcribe": "Videodakı nitqi mətnə çevir",
+    "cmd_summarize": "Videonun xülasəsini al", "cmd_feedback": "Rəy göndər", "cmd_support": "Botu dəstəklə",
+    "cmd_settings": "Dili dəyiş", "cmd_credits": "Kredit balansına bax", "cmd_invite": "Dostları dəvət et və kredit qazan",
+})
+MENU_COMMANDS = ("start", "help", "download", "transcribe", "summarize", "feedback", "support", "settings", "credits", "invite")
+
+
 def normalize_language(language: str | None) -> str:
     return language if language in SUPPORTED_LANGUAGES else "en"
 
@@ -244,3 +266,8 @@ def language_keyboard() -> Any:
         InlineKeyboardButton(LANGUAGE_NAMES["ru"], callback_data="lang|ru"),
         InlineKeyboardButton(LANGUAGE_NAMES["az"], callback_data="lang|az"),
     ]])
+
+
+def bot_commands(language: str) -> list[Any]:
+    from telegram import BotCommand
+    return [BotCommand(command, tr(language, f"cmd_{command}")) for command in MENU_COMMANDS]
