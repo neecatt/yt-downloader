@@ -854,7 +854,7 @@ def admin_history(user_id: int, limit: int = 100) -> list[dict[str, Any]]:
 def admin_usage(days: int = 30, excluded_usernames: list[str] | None = None) -> dict[str, Any]:
     """Return aggregate product usage for the private operations dashboard."""
     if not enabled():
-        return {"totals": {}, "daily": []}
+        return {"totals": {}, "daily": [], "sources": []}
     days = min(365, max(1, int(days)))
     cutoff = _now() - timedelta(days=days)
     excluded = sorted({value.strip().lstrip("@").lower() for value in (excluded_usernames or []) if value.strip()})
@@ -890,10 +890,25 @@ def admin_usage(days: int = 30, excluded_usernames: list[str] | None = None) -> 
               AND NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username=LOWER(LTRIM(COALESCE(a.telegram_username,ou.telegram_username,''),'@')))
             GROUP BY DATE(o.created_at) ORDER BY DATE(o.created_at)
         """, (excluded, cutoff)).fetchall()
+        # Deep-link payloads are user-controlled, so cap the number of sources returned.
+        source_rows = connection.execute("""
+            WITH excluded AS (SELECT UNNEST(%s::TEXT[]) AS username)
+            SELECT u.acquisition_source, COUNT(*),
+                   COUNT(*) FILTER (WHERE u.created_at >= %s),
+                   COUNT(*) FILTER (WHERE u.created_at >= %s AND u.successful_downloads > 0)
+            FROM user_accounts u
+            WHERE NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username=LOWER(LTRIM(COALESCE(u.telegram_username,''),'@')))
+            GROUP BY u.acquisition_source
+            ORDER BY 3 DESC, 2 DESC, 1 NULLS LAST
+            LIMIT 50
+        """, (excluded, cutoff, cutoff)).fetchall()
     keys = ("users", "newUsers", "successfulOperations", "downloads", "aiRequests", "transcriptions", "summaries", "creditsEarned", "creditsSpent", "qualifiedReferrals")
     return {"totals": dict(zip(keys, (int(value or 0) for value in totals))), "daily": [
         {"date": row[0].isoformat(), "successfulOperations": int(row[1] or 0), "aiRequests": int(row[2] or 0), "summaries": int(row[3] or 0)}
         for row in daily_rows
+    ], "sources": [
+        {"source": row[0], "users": int(row[1] or 0), "newUsers": int(row[2] or 0), "activatedNewUsers": int(row[3] or 0)}
+        for row in source_rows
     ]}
 
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { AdminLayout } from "@/components/admin-layout";
-import type { UsageData } from "@/lib/monetization-admin";
+import type { AcquisitionSource, UsageData } from "@/lib/monetization-admin";
 
 const labels: [string, string][] = [["users", "Total users"], ["newUsers", "New users"], ["successfulOperations", "Successful operations"], ["downloads", "Downloads"], ["aiRequests", "AI requests"], ["transcriptions", "Transcriptions"], ["summaries", "Summaries"], ["creditsSpent", "Credits spent"], ["qualifiedReferrals", "Qualified referrals"]];
 const FILTER_STORAGE_KEY = "yt-downloader.usage-exclusions.v1";
@@ -17,6 +17,26 @@ function exclusions(value: string) {
     throw new Error("Enter up to 50 valid Telegram usernames separated by commas.");
   }
   return [...new Set(candidates)];
+}
+
+function SourcesPanel({ sources, days }: { sources: AcquisitionSource[] | undefined; days: number }) {
+  const rows = sources || [];
+  const max = Math.max(1, ...rows.map((row) => row.newUsers));
+  return <section className="panel usage-sources" aria-labelledby="sources-heading">
+    <div className="panel-heading"><div><p className="eyebrow">Acquisition</p><h2 id="sources-heading">Where users come from</h2></div><span className="muted">From links like t.me/vidlyaibot?start=tiktok</span></div>
+    {rows.length ? <div className="table-wrap"><table className="sources-table">
+      <thead><tr><th scope="col">Source</th><th scope="col">New users · {days} days</th><th scope="col">Activated</th><th scope="col">All time</th></tr></thead>
+      <tbody>{rows.map((row) => {
+        const rate = row.newUsers ? Math.round((row.activatedNewUsers / row.newUsers) * 100) : null;
+        return <tr key={row.source ?? "direct"}>
+          <th scope="row">{row.source ? <strong>{row.source}</strong> : <span className="muted">Direct / unknown</span>}</th>
+          <td><div className="source-bar">{row.newUsers > 0 && <span style={{ width: `${(row.newUsers / max) * 70}%` }} aria-hidden="true" />}<strong>{row.newUsers}</strong></div></td>
+          <td>{row.activatedNewUsers}{rate !== null && <span className="muted">{rate}% downloaded something</span>}</td>
+          <td>{row.users}</td>
+        </tr>;
+      })}</tbody>
+    </table></div> : <p className="muted">No users yet. Share a tracked link to start measuring sources.</p>}
+  </section>;
 }
 
 export function UsageScreen() {
@@ -74,6 +94,7 @@ export function UsageScreen() {
     <section className="panel usage-filters"><span className="muted">Exclude test accounts from every metric and chart.</span><input aria-label="Exclude Telegram usernames" placeholder="@your_username, @test_account" value={excludeUsers} onChange={(event) => setExcludeUsers(event.target.value)} onKeyDown={(event) => event.key === "Enter" && load()} /><button className="button" onClick={() => load()}>Apply</button><button className="button ghost" onClick={resetExclusions}>Reset</button></section>
     {error && <p className="inline-error">{error}</p>}
     <section className="stats-grid usage-stats">{labels.map(([key, label]) => <article className="stat" key={key}><span>{label}</span><strong>{data?.totals[key] ?? "—"}</strong></article>)}</section>
+    {data && <SourcesPanel sources={data.sources} days={days} />}
     <section className="panel usage-chart"><div className="panel-heading"><div><p className="eyebrow">Activity trend</p><h2>Successful operations</h2></div><span className="muted">Hover a point for details</span></div>{points.length ? <div className="line-chart"><svg viewBox="0 0 100 100" role="img" aria-label="Successful operations by day" preserveAspectRatio="none"><defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="var(--accent)" stopOpacity=".22" /><stop offset="100%" stopColor="var(--accent)" stopOpacity="0" /></linearGradient></defs><line x1="0" y1="92" x2="100" y2="92" className="chart-axis" /><polyline points={`${line} 100,92 0,92`} className="chart-area" /><polyline points={line} className="chart-line" />{points.map((point, index) => <circle key={point.date} cx={point.x} cy={point.y} r={hovered === index ? 1.9 : 1.25} className="chart-point" onMouseEnter={() => setHovered(index)} onMouseLeave={() => setHovered(null)} onFocus={() => setHovered(index)} onBlur={() => setHovered(null)} tabIndex={0} aria-label={`${dateLabel(point.date)}: ${point.successfulOperations} successful operations`} />)}</svg>{selected && <div className="chart-tooltip" style={{ left: `${Math.min(86, Math.max(14, selected.x))}%` }}><strong>{dateLabel(selected.date)}</strong><span>{selected.successfulOperations} operations</span><span>{selected.aiRequests} AI requests · {selected.summaries} summaries</span></div>}<div className="chart-labels"><span>{dateLabel(points[0].date)}</span><span>{dateLabel(points[Math.floor(points.length / 2)].date)}</span><span>{dateLabel(points[points.length - 1].date)}</span></div></div> : <p className="muted">No completed operations in this period.</p>}</section>
   </main></AdminLayout>;
 }

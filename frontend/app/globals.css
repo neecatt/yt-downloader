@@ -147,3 +147,10 @@
   .history-list article { grid-template-columns:1fr; gap:4px; }
   .history-list small { text-align:left; }
 }
+.usage-sources { padding:22px 22px 6px; } .sources-table { min-width:560px; } .sources-table th[scope="row"] { color:var(--text); font-size:13px; text-transform:none; letter-spacing:0; font-weight:400; } .sources-table td .muted { margin-top:4px; }
+.source-bar { display:flex; align-items:center; gap:10px; min-width:160px; } .source-bar span { display:block; height:8px; min-width:2px; border-radius:99px; background:var(--accent); } .source-bar strong { display:inline; }
+@media (max-width:760px) {
+  .topbar,.topbar-actions { flex-wrap:wrap; }
+  .usage-sources { padding:18px 14px 4px; } .usage-sources .panel-heading { flex-direction:column; align-items:flex-start; gap:6px; }
+  .sources-table { min-width:0; } .sources-table th,.sources-table td { padding:12px 6px; } .source-bar { min-width:0; gap:6px; }
+}
