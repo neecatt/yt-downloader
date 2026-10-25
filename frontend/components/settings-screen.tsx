@@ -109,6 +109,6 @@ export function SettingsScreen() {
         <div className="composer-actions"><span className="muted">Changes apply to new decisions immediately.</span><button className="button" disabled={saving}>{saving ? "Saving…" : "Save settings"}</button></div>
       </form>}
     </section>
-    <section className="panel user-manager"><h2>Settings history</h2><div className="history-list">{history.map((item, index) => <article key={`${item.createdAt}-${index}`}><strong>{new Date(item.createdAt).toLocaleString()}</strong><span><span className="history-reason">{item.reason}</span><small className="history-change">{changedSummary(item.changed)}</small></span><small>{item.actor}</small></article>)}{!history.length && <p className="muted">No changes recorded yet.</p>}</div></section>
+    <section className="panel user-manager"><h2>Settings history</h2><div className="history-list">{history.map((item, index) => <article key={`${item.createdAt}-${index}`}><strong>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.createdAt))}</strong><span><span className="history-reason">{item.reason}</span><small className="history-change">{changedSummary(item.changed)}</small></span><small>{item.actor}</small></article>)}{!history.length && <p className="muted">No changes recorded yet.</p>}</div></section>
   </main></AdminLayout>;
 }
