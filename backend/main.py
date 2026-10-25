@@ -11,7 +11,6 @@ import asyncio
 import concurrent.futures
 import logging
 import os
-import re
 import secrets
 import shutil
 import tempfile
@@ -19,7 +18,7 @@ import time
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 try:
     from dotenv import load_dotenv
@@ -46,7 +45,7 @@ try:
     from .bot.platforms.routing import activity_platform, is_x_photo_link, should_analyze_media_type
     from .bot.services import downloader, storage
     from .bot.telegram import callbacks, commands, delivery, keyboards, messages, monetization
-    from .bot.persistence import monetization_store
+    from .bot.persistence import activity_store, monetization_store
     from .bot.observability import configure_logging, log_timing
     from .bot.integrations.transcription import (
         transcription_is_configured,
@@ -69,7 +68,7 @@ except ImportError:  # Supports running `python main.py` in backend.
     from bot.platforms.routing import activity_platform, is_x_photo_link, should_analyze_media_type
     from bot.services import downloader, storage
     from bot.telegram import callbacks, commands, delivery, keyboards, messages, monetization
-    from bot.persistence import monetization_store
+    from bot.persistence import activity_store, monetization_store
     from bot.observability import configure_logging, log_timing
     from bot.integrations.transcription import (
         transcription_is_configured,
@@ -88,7 +87,6 @@ except ImportError:  # Supports running `python main.py` in backend.
     from bot.i18n import language_keyboard, normalize_language, tr
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
-from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -159,11 +157,6 @@ ANALYSES_PER_USER_PER_HOUR = settings.runtime.analyses_per_user_hour
 DOWNLOADS_GLOBAL_PER_HOUR = settings.runtime.downloads_global_hour
 ANALYSES_GLOBAL_PER_HOUR = settings.runtime.analyses_global_hour
 
-# Telegram callback data is limited to 64 bytes. A random opaque key keeps
-# URLs and user input out of callback data and prevents cross-chat reuse.
-VIDEO_ONLY_MESSAGE = "This is an image or carousel post. This bot only downloads videos and audio. Please send an individual video link."
-
-
 DONATION_URL = validate_donation_url(DONATION_URL_RAW)
 
 
@@ -230,10 +223,6 @@ def chat_language(chat_id: int) -> str:
     if cached:
         return normalize_language(cached)
     try:
-        try:
-            from .bot.persistence import activity_store
-        except ImportError:
-            from bot.persistence import activity_store
         selected = normalize_language(activity_store.get_language(chat_id))
     except Exception:
         selected = "en"
@@ -245,10 +234,6 @@ def update_chat_language(chat_id: int, language: str) -> str:
     selected = normalize_language(language)
     LANGUAGE_CACHE[chat_id] = selected
     try:
-        try:
-            from .bot.persistence import activity_store
-        except ImportError:
-            from bot.persistence import activity_store
         activity_store.set_language(chat_id, selected)
     except Exception:
         LOG.warning("Could not persist chat language", exc_info=True)
@@ -323,8 +308,9 @@ def discard_pending_delivery(pending: PendingDelivery) -> None:
 
 def save_state(update: Update, url: str, info: dict[str, Any] | None = None) -> str:
     prune_states()
-    message = update.effective_message
     user = update.effective_user
+    # Telegram callback data is limited to 64 bytes. A random opaque key keeps
+    # URLs and user input out of callback data and prevents cross-chat reuse.
     key = secrets.token_urlsafe(9)
     _record_contact(update)
     activity_id = _create_activity_event(update, url, info)
@@ -344,19 +330,20 @@ def save_state(update: Update, url: str, info: dict[str, Any] | None = None) -> 
 _activity_platform = activity_platform
 
 
+def _telegram_username(user: Any) -> str | None:
+    username = getattr(user, "username", None)
+    return f"@{username}" if username else None
+
+
 def _record_contact(update: Update) -> None:
     try:
-        try:
-            from .bot.persistence import activity_store
-        except ImportError:
-            from bot.persistence import activity_store
         if not activity_store.enabled() or not update.effective_chat:
             return
         user = update.effective_user
         chat = update.effective_chat
         activity_store.record_contact(
             chat_id=chat.id,
-            username=f"@{getattr(user, 'username', '')}" if getattr(user, "username", None) else None,
+            username=_telegram_username(user),
             display_name=getattr(user, "full_name", None) if user else None,
             chat_type=getattr(chat, "type", None),
         )
@@ -408,15 +395,11 @@ def _record_chat_message(update: Update, text: str) -> None:
     if not text.strip() or not update.effective_chat:
         return
     try:
-        try:
-            from .bot.persistence import activity_store
-        except ImportError:
-            from bot.persistence import activity_store
         user = update.effective_user
         message = update.effective_message
         activity_store.record_message(
             chat_id=update.effective_chat.id,
-            username=f"@{getattr(user, 'username', '')}" if getattr(user, "username", None) else None,
+            username=_telegram_username(user),
             display_name=getattr(user, "full_name", None) if user else None,
             direction="inbound",
             text=text,
@@ -428,16 +411,12 @@ def _record_chat_message(update: Update, text: str) -> None:
 
 def _create_activity_event(update: Update, url: str, info: dict[str, Any] | None, *, action: str = "download") -> str | None:
     try:
-        try:
-            from .bot.persistence import activity_store
-        except ImportError:
-            from bot.persistence import activity_store
         if not activity_store.enabled():
             return None
         user = update.effective_user
         chat = update.effective_chat
         return activity_store.create_event(
-            username=f"@{getattr(user, 'username', '')}" if getattr(user, "username", None) else None,
+            username=_telegram_username(user),
             display_name=getattr(user, "full_name", None) if user else None,
             chat_type=getattr(chat, "type", None) if chat else None,
             chat_id=getattr(chat, "id", None) if chat else None,
@@ -452,10 +431,6 @@ def _create_activity_event(update: Update, url: str, info: dict[str, Any] | None
 
 
 def _update_activity(event_id: str | None, **kwargs: Any) -> None:
-    try:
-        from .bot.persistence import activity_store
-    except ImportError:
-        from bot.persistence import activity_store
     activity_store.update_event(event_id, **kwargs)
 
 
@@ -545,12 +520,6 @@ def upload_to_r2_with_key(filename: Path, info: dict[str, Any], extension: str) 
     )
 
 
-def delete_r2_object(object_key: str) -> None:
-    if not object_key or not r2_is_configured():
-        return
-    storage.delete(object_key, client_factory=r2_client, bucket=R2_BUCKET_NAME)
-
-
 ProgressCallback = downloader.ProgressCallback
 
 # Telegram commands live in bot.telegram.commands; aliases preserve the
@@ -622,10 +591,6 @@ async def transcription_recovery_loop() -> None:
     stale_after = settings.queue.stale_job_seconds
     while True:
         try:
-            try:
-                from .bot.persistence import activity_store
-            except ImportError:
-                from bot.persistence import activity_store
             activity_store.recover_stale_transcription_jobs(stale_after_seconds=stale_after)
             if queue_is_configured():
                 for job_id in activity_store.get_requeueable_transcription_job_ids(
@@ -726,10 +691,6 @@ def start_admin_api() -> threading.Thread | None:
 def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN must be set")
-    try:
-        from .bot.persistence import activity_store
-    except ImportError:
-        from bot.persistence import activity_store
     activity_store.initialize()
     monetization_store.initialize()
     start_admin_api()
