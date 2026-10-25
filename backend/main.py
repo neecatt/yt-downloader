@@ -20,6 +20,26 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # Keeps the bot usable in the old local virtualenv.
+    def load_dotenv() -> None:
+        env_file = Path(__file__).with_name(".env")
+        if not env_file.is_file():
+            return
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+# Settings are read once at import time, so .env must be loaded before any
+# bot module (and therefore bot.config.settings) is imported.
+if os.getenv("YT_DOWNLOADER_TESTING", "").strip().lower() not in {"1", "true", "yes", "on"}:
+    load_dotenv()
+
 try:
     from .bot.integrations.cookies import prepare_cookie_file as _prepare_cookie_file
     from .bot.platforms.media import display_error, format_duration, progress_text, safe_filename
@@ -66,19 +86,6 @@ except ImportError:  # Supports running `python main.py` in backend.
         validate_remote_url,
     )
     from bot.i18n import language_keyboard, normalize_language, tr
-try:
-    from dotenv import load_dotenv
-except ImportError:  # Keeps the bot usable in the old local virtualenv.
-    def load_dotenv() -> None:
-        env_file = Path(__file__).with_name(".env")
-        if not env_file.is_file():
-            return
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, TelegramError
@@ -97,8 +104,6 @@ CALLBACK_QUERY_PATTERN = r"^(?:d|m|p|t|s|lang|acct)\|"
 
 LOG = logging.getLogger("downloader_bot")
 
-if os.getenv("YT_DOWNLOADER_TESTING", "").strip().lower() not in {"1", "true", "yes", "on"}:
-    load_dotenv()
 configure_logging()
 
 try:
