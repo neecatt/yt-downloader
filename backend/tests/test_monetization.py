@@ -360,8 +360,8 @@ class PaymentStoreTests(unittest.TestCase):
     def test_payment_and_renewal_are_idempotent_and_extend_expiry(self):
         payload = "premium:7:opaque"
         database = PaymentDatabase(payload)
-        first_expiry = datetime(2026, 10, 1, tzinfo=timezone.utc)
-        renewal_expiry = datetime(2026, 11, 1, tzinfo=timezone.utc)
+        first_expiry = datetime.now(timezone.utc) + timedelta(days=30)
+        renewal_expiry = first_expiry + timedelta(days=30)
         with patch.object(store, "enabled", return_value=True), patch.object(store, "_connect", return_value=database), patch.object(store, "settings", fake_settings()):
             self.assertTrue(store.apply_star_payment(user_id=7, payload=payload, charge_id="first", amount=149, currency="XTR", expiration=first_expiry, recurring=True, first_recurring=True))
             self.assertFalse(store.apply_star_payment(user_id=7, payload=payload, charge_id="first", amount=149, currency="XTR", expiration=first_expiry, recurring=True, first_recurring=True))
@@ -372,7 +372,7 @@ class PaymentStoreTests(unittest.TestCase):
     def test_refund_is_idempotent_and_recalculates_access(self):
         payload = "premium:7:opaque"
         database = PaymentDatabase(payload)
-        expiry = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        expiry = datetime.now(timezone.utc) + timedelta(days=30)
         with patch.object(store, "enabled", return_value=True), patch.object(store, "_connect", return_value=database), patch.object(store, "settings", fake_settings()):
             store.apply_star_payment(user_id=7, payload=payload, charge_id="first", amount=149, currency="XTR", expiration=expiry, recurring=True, first_recurring=True)
             self.assertTrue(store.mark_refunded("first", 7))
