@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
 import tempfile
 import time
@@ -14,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from telegram import Bot
 
+from ..config.settings import settings
 from ..queue.config import app
 from ..queue.recovery import retryable, retry_delay_seconds
 from ..persistence import activity_store, monetization_store
@@ -30,50 +30,44 @@ from ..telegram.summary import send_summary
 
 
 LOG = logging.getLogger("downloader_bot.transcription_worker")
-MAX_RETRIES = max(0, int(os.getenv("TRANSCRIPTION_MAX_RETRIES", "2")))
-try:
-    RETRY_AFTER_MAX_SECONDS = max(60, int(os.getenv("TRANSCRIPTION_RETRY_AFTER_MAX_SECONDS", "900")))
-except ValueError:
-    RETRY_AFTER_MAX_SECONDS = 900
+MAX_RETRIES = settings.queue.max_retries
+RETRY_AFTER_MAX_SECONDS = settings.queue.retry_after_max_seconds
 _WORKER_INITIALIZED = False
+_DOWNLOADER_CONFIG: DownloaderConfig | None = None
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
-def _int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except ValueError:
-        return default
-
-
 def _worker_downloader_config() -> DownloaderConfig:
-    return DownloaderConfig(
-        max_bytes=_int("MAX_DOWNLOAD_MB", 2048) * 1024 * 1024,
-        fragment_workers=max(1, _int("FRAGMENT_WORKERS", 4)),
-        http_chunk_size_mb=max(1, _int("HTTP_CHUNK_SIZE_MB", 10)),
-        cookies_file=prepare_cookie_file(os.getenv("YTDLP_COOKIES_B64"), os.getenv("YTDLP_COOKIES_FILE")),
-        proxy=os.getenv("YTDLP_PROXY") or None,
-        js_runtime=os.getenv("YTDLP_JS_RUNTIME") or None,
-        player_client=os.getenv("YTDLP_PLAYER_CLIENT") or None,
-        po_token=os.getenv("YTDLP_PO_TOKEN") or None,
-        po_provider_url=os.getenv("YTDLP_POT_PROVIDER_URL") or None,
-    )
+    # Materialize base64 cookies once per process; preparing them per job
+    # would leave a new secret-bearing temp file behind for every task.
+    global _DOWNLOADER_CONFIG
+    if _DOWNLOADER_CONFIG is None:
+        download_settings = settings.download
+        _DOWNLOADER_CONFIG = DownloaderConfig(
+            max_bytes=download_settings.max_bytes,
+            fragment_workers=download_settings.fragment_workers,
+            http_chunk_size_mb=download_settings.http_chunk_size_mb,
+            cookies_file=prepare_cookie_file(download_settings.cookies_b64, download_settings.cookies_file),
+            proxy=download_settings.proxy,
+            js_runtime=download_settings.js_runtime,
+            player_client=download_settings.player_client,
+            po_token=download_settings.po_token,
+            po_provider_url=download_settings.po_provider_url,
+        )
+    return _DOWNLOADER_CONFIG
 
 
-def _storage_config() -> tuple[str | None, str | None, str | None, str | None, int, int]:
-    endpoint = os.getenv("R2_ENDPOINT_URL") or None
-    access = os.getenv("R2_ACCESS_KEY_ID") or None
-    secret = os.getenv("R2_SECRET_ACCESS_KEY") or None
-    api_token = os.getenv("R2_API_TOKEN") or ""
-    if api_token and ":" in api_token:
-        access, secret = api_token.split(":", 1)
-    return endpoint, access, secret, os.getenv("R2_BUCKET_NAME") or None, _int("R2_PRESIGNED_URL_TTL_SECONDS", 86400), max(1, _int("R2_UPLOAD_CONCURRENCY", 8))
+def _bot_token() -> str:
+    token = (settings.telegram.token or "").strip()
+    if not token:
+        raise RuntimeError("Telegram bot token is not configured")
+    return token
 
 
 def _r2_client():
-    endpoint, access, secret, bucket, _, _ = _storage_config()
-    return storage.client(endpoint, access, secret, bucket)
+    config = settings.storage
+    return storage.client(config.endpoint_url, config.access_key_id, config.secret_access_key, config.bucket_name)
 
 
 def _download_sync(url: str, fmt: str, directory: str):
@@ -81,18 +75,18 @@ def _download_sync(url: str, fmt: str, directory: str):
 
 
 def _upload_to_r2(filename: Path, info: dict[str, Any], extension: str) -> tuple[str, str]:
-    endpoint, access, secret, bucket, ttl, concurrency = _storage_config()
+    config = settings.storage
     return storage.upload(
-        filename, info, extension, client_factory=_r2_client, bucket=bucket or "",
-        public_base_url=None, url_ttl=ttl, retention_seconds=ttl,
-        schedule_delete=schedule_object_delete, upload_concurrency=concurrency,
+        filename, info, extension, client_factory=_r2_client, bucket=config.bucket_name or "",
+        public_base_url=None, url_ttl=config.presigned_url_ttl, retention_seconds=config.presigned_url_ttl,
+        schedule_delete=schedule_object_delete, upload_concurrency=config.upload_concurrency,
     )
 
 
 def _delete_r2_object(object_key: str) -> None:
-    endpoint, access, secret, bucket, _, _ = _storage_config()
-    if object_key and storage.configured(endpoint, access, secret, bucket):
-        storage.delete(object_key, client_factory=_r2_client, bucket=bucket or "")
+    config = settings.storage
+    if object_key and storage.configured(config.endpoint_url, config.access_key_id, config.secret_access_key, config.bucket_name):
+        storage.delete(object_key, client_factory=_r2_client, bucket=config.bucket_name or "")
 
 
 def initialize_worker_state() -> None:
@@ -102,7 +96,7 @@ def initialize_worker_state() -> None:
     activity_store.initialize()
     monetization_store.initialize()
     recovered = activity_store.recover_stale_transcription_jobs(
-        stale_after_seconds=max(3600, int(os.getenv("TRANSCRIPTION_STALE_JOB_SECONDS", "21600")))
+        stale_after_seconds=settings.queue.stale_job_seconds
     )
     if recovered:
         LOG.warning("event=transcription_stale_jobs_recovered count=%s", recovered)
@@ -112,10 +106,7 @@ def initialize_worker_state() -> None:
 async def _edit_status(job: dict[str, Any], text: str) -> None:
     message_id = job.get("status_message_id")
     try:
-        token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        if not token:
-            raise RuntimeError("Telegram bot token is not configured")
-        async with Bot(token=token) as bot:
+        async with Bot(token=_bot_token()) as bot:
             if message_id:
                 await bot.edit_message_text(chat_id=job["chat_id"], message_id=message_id, text=text)
                 return
@@ -144,9 +135,7 @@ async def _refresh_queue_statuses() -> None:
 
 
 async def _deliver(job: dict[str, Any], transcript: str, title: str, ui_language: str, detected_language: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("Telegram bot token is not configured")
+    token = _bot_token()
     filename = transcript_filename(title)
     directory = Path(tempfile.mkdtemp(prefix="transcript-artifact-"))
     artifact = directory / filename
@@ -172,10 +161,7 @@ async def _deliver(job: dict[str, Any], transcript: str, title: str, ui_language
 
 
 async def _deliver_summary(job: dict[str, Any], summary: str) -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    if not token:
-        raise RuntimeError("Telegram bot token is not configured")
-    async with Bot(token=token) as bot:
+    async with Bot(token=_bot_token()) as bot:
         if job.get("status_message_id"):
             try:
                 await bot.delete_message(chat_id=job["chat_id"], message_id=job["status_message_id"])

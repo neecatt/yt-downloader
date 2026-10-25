@@ -89,6 +89,22 @@ class AdminSettings:
     enabled: bool
     host: str
     port: int
+    requests_per_minute: int
+
+
+@dataclass(frozen=True, slots=True)
+class QueueSettings:
+    max_size: int
+    max_per_user: int
+    max_retries: int
+    retry_after_max_seconds: int
+    stale_job_seconds: int
+    recovery_interval_seconds: int
+    estimated_job_seconds: int
+    visibility_timeout_seconds: int
+    result_expires_seconds: int
+    task_time_limit_seconds: int
+    soft_time_limit_seconds: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +141,7 @@ class AppSettings:
     storage: StorageSettings
     runtime: RuntimeSettings
     admin: AdminSettings
+    queue: QueueSettings
     donation: DonationSettings
     monetization: MonetizationSettings
 
@@ -209,6 +226,20 @@ def load_settings() -> AppSettings:
         admin=AdminSettings(
             token=os.getenv("ADMIN_API_TOKEN", ""), enabled=_flag("ADMIN_API_ENABLED", True),
             host=os.getenv("ADMIN_API_HOST", "0.0.0.0"), port=_int("ADMIN_API_PORT", _int("PORT", 8080, 1), 1),
+            requests_per_minute=_int("ADMIN_REQUESTS_PER_MINUTE", 60, 10, 300),
+        ),
+        queue=QueueSettings(
+            max_size=_int("TRANSCRIPTION_QUEUE_MAX_SIZE", 100, 1),
+            max_per_user=_int("TRANSCRIPTION_QUEUE_MAX_PER_USER", 3, 1),
+            max_retries=_int("TRANSCRIPTION_MAX_RETRIES", 2, 0, 10),
+            retry_after_max_seconds=_int("TRANSCRIPTION_RETRY_AFTER_MAX_SECONDS", 900, 60),
+            stale_job_seconds=_int("TRANSCRIPTION_STALE_JOB_SECONDS", 21600, 3600),
+            recovery_interval_seconds=_int("TRANSCRIPTION_RECOVERY_INTERVAL_SECONDS", 60, 30, 300),
+            estimated_job_seconds=_int("TRANSCRIPTION_ESTIMATED_SECONDS", 300, 60),
+            visibility_timeout_seconds=_int("CELERY_VISIBILITY_TIMEOUT_SECONDS", 21600, 3600),
+            result_expires_seconds=_int("CELERY_RESULT_EXPIRES_SECONDS", 86400, 60),
+            task_time_limit_seconds=_int("CELERY_TASK_TIME_LIMIT_SECONDS", 18000, 3600),
+            soft_time_limit_seconds=_int("CELERY_SOFT_TIME_LIMIT_SECONDS", 17400, 1800),
         ),
         donation=DonationSettings(
             url=os.getenv("DONATION_URL", "").strip(), prompts_enabled=_flag("DONATION_PROMPTS_ENABLED", True),

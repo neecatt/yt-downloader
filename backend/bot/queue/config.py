@@ -6,6 +6,8 @@ import os
 
 from celery import Celery
 
+from ..config.settings import settings
+
 
 def redis_url() -> str:
     return os.getenv("REDIS_URL", "").strip()
@@ -30,9 +32,9 @@ app.conf.update(
     task_publish_retry_policy={"max_retries": 5, "interval_start": 1, "interval_step": 2, "interval_max": 10},
     worker_prefetch_multiplier=1,
     broker_transport_options={
-        "visibility_timeout": max(3600, int(os.getenv("CELERY_VISIBILITY_TIMEOUT_SECONDS", "21600"))),
+        "visibility_timeout": settings.queue.visibility_timeout_seconds,
     },
-    result_expires=int(os.getenv("CELERY_RESULT_EXPIRES_SECONDS", "86400")),
-    task_time_limit=max(3600, int(os.getenv("CELERY_TASK_TIME_LIMIT_SECONDS", "18000"))),
-    task_soft_time_limit=max(1800, int(os.getenv("CELERY_SOFT_TIME_LIMIT_SECONDS", "17400"))),
+    result_expires=settings.queue.result_expires_seconds,
+    task_time_limit=settings.queue.task_time_limit_seconds,
+    task_soft_time_limit=settings.queue.soft_time_limit_seconds,
 )

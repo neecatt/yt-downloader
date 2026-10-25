@@ -618,15 +618,8 @@ async def pending_delivery_cleanup_loop() -> None:
 
 async def transcription_recovery_loop() -> None:
     """Re-submit durable jobs whose Celery message was lost or exhausted retries."""
-    try:
-        interval = max(30, min(300, int(os.getenv("TRANSCRIPTION_RECOVERY_INTERVAL_SECONDS", "60"))))
-    except ValueError:
-        interval = 60
-    try:
-        stale_after = max(3600, int(os.getenv("TRANSCRIPTION_STALE_JOB_SECONDS", "21600")))
-    except ValueError:
-        stale_after = 21600
-
+    interval = settings.queue.recovery_interval_seconds
+    stale_after = settings.queue.stale_job_seconds
     while True:
         try:
             try:
