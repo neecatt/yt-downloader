@@ -11,11 +11,12 @@ from fastapi.responses import JSONResponse
 from telegram import Bot
 from telegram.error import TelegramError
 
+from ..config.settings import settings
 from ..persistence import activity_store, monetization_store
 from ..platforms.limits import SlidingWindowLimiter
 
 
-ADMIN_REQUESTS_PER_MINUTE = min(300, max(10, int(os.getenv("ADMIN_REQUESTS_PER_MINUTE", "60"))))
+ADMIN_REQUESTS_PER_MINUTE = settings.admin.requests_per_minute
 MESSAGE_MAX_LENGTH = 4096
 MAX_MESSAGE_RECIPIENTS = 10000
 MESSAGE_SEND_DELAY_SECONDS = 0.05

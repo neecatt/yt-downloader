@@ -372,6 +372,21 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         bot.DOWNLOAD_LOCKS.clear()
         bot.SUPPORT_PROMPT_LAST_SHOWN.clear()
 
+    async def test_command_menu_is_localized_for_every_supported_language(self):
+        application = SimpleNamespace(bot=SimpleNamespace(set_my_commands=AsyncMock()))
+        with patch.object(bot, "queue_is_configured", return_value=False), patch.object(bot, "r2_is_configured", return_value=False):
+            await bot.post_init(application)
+        await bot.post_shutdown(application)
+        menus = {call.kwargs.get("language_code", "en"): call.args[0] for call in application.bot.set_my_commands.await_args_list}
+        self.assertEqual(set(menus), set(bot.SUPPORTED_LANGUAGES))
+        english = {command.command: command.description for command in menus["en"]}
+        for language, commands in menus.items():
+            for command in commands:
+                self.assertNotEqual(command.description, f"cmd_{command.command}", (language, command.command))
+                if language != "en":
+                    # A missing translation would silently fall back to English.
+                    self.assertNotEqual(command.description, english[command.command], (language, command.command))
+
     async def test_start_explains_supported_usage(self):
         update, message = update_for()
         await bot.start(update, SimpleNamespace())

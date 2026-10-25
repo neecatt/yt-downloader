@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
 
+from ..config.settings import settings
+
 _lock = threading.Lock()
 LOG = logging.getLogger("downloader_bot")
 
@@ -192,8 +194,8 @@ def create_transcription_job(
     try:
         with _lock, _connect() as connection:
             active_statuses = ("queued", "processing")
-            global_limit = max(1, int(os.getenv("TRANSCRIPTION_QUEUE_MAX_SIZE", "100")))
-            user_limit = max(1, int(os.getenv("TRANSCRIPTION_QUEUE_MAX_PER_USER", "3")))
+            global_limit = settings.queue.max_size
+            user_limit = settings.queue.max_per_user
             total = connection.execute(
                 "SELECT COUNT(*) FROM transcription_jobs WHERE status IN (%s, %s)", active_statuses
             ).fetchone()[0]
@@ -319,11 +321,7 @@ def get_transcription_queue_status(job_id: str) -> dict[str, Any] | None:
             average_seconds = connection.execute(
                 "SELECT AVG(processing_duration_seconds) FROM transcription_jobs WHERE status = 'completed' AND processing_duration_seconds IS NOT NULL"
             ).fetchone()[0]
-            try:
-                default_seconds = max(60, int(os.getenv("TRANSCRIPTION_ESTIMATED_SECONDS", "300")))
-            except ValueError:
-                default_seconds = 300
-            average_seconds = max(60, int(round(average_seconds or default_seconds)))
+            average_seconds = max(60, int(round(average_seconds or settings.queue.estimated_job_seconds)))
             if status != "queued":
                 return {"status": status, "position": 1 if status == "processing" else None, "eta_minutes": 0}
             queued_ahead = connection.execute(
