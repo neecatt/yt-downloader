@@ -100,6 +100,16 @@ class MonetizationPostgresIntegrationTests(unittest.TestCase):
             grants = connection.execute("SELECT COUNT(*) FROM credit_ledger WHERE telegram_user_id=42 AND reason='starter_grant'").fetchone()[0]
         self.assertEqual(grants, 1)
 
+    def test_acquisition_source_is_first_touch(self):
+        store.ensure_account(user_id=8, chat_id=8, username=None, display_name=None, acquisition_source="tiktok")
+        store.ensure_account(user_id=8, chat_id=8, username=None, display_name=None, acquisition_source="youtube")
+        store.ensure_account(user_id=8, chat_id=8, username=None, display_name=None)
+        self.account(9)
+        store.ensure_account(user_id=9, chat_id=9, username=None, display_name=None, acquisition_source="reddit")
+        with self.connect() as connection:
+            sources = dict(connection.execute("SELECT telegram_user_id, acquisition_source FROM user_accounts").fetchall())
+        self.assertEqual(sources, {8: "tiktok", 9: None})
+
     def test_concurrent_duplicate_reservation_is_atomic_across_connections(self):
         self.account(7)
         with patch.object(store, "_LOCK", _ConcurrentLock()):

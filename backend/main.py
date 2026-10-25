@@ -336,7 +336,7 @@ def _telegram_username(user: Any) -> str | None:
     return f"@{username}" if username else None
 
 
-def _record_contact(update: Update) -> None:
+def _record_contact(update: Update, *, acquisition_source: str | None = None) -> None:
     try:
         if not activity_store.enabled() or not update.effective_chat:
             return
@@ -349,7 +349,7 @@ def _record_contact(update: Update) -> None:
             chat_type=getattr(chat, "type", None),
         )
         if user:
-            monetization.ensure_update_account(update)
+            monetization.ensure_update_account(update, acquisition_source=acquisition_source)
     except Exception:
         LOG.warning("Could not record bot contact", exc_info=True)
 
