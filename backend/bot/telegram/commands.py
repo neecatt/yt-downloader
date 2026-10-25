@@ -8,11 +8,24 @@ Telegram interaction layer.
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 from typing import Any
 
 from telegram import Update
 from telegram.ext import ContextTypes
+
+
+# Telegram deep-link payloads allow only these characters, up to 64 of them.
+_START_PAYLOAD = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def acquisition_source(args: list[str]) -> str | None:
+    """Map a /start deep-link payload to a normalized acquisition source."""
+    payload = args[0] if args else ""
+    if not _START_PAYLOAD.fullmatch(payload):
+        return None
+    return "referral" if payload.startswith("ref_") else payload.lower()
 
 
 def _app() -> Any:
@@ -25,9 +38,9 @@ def _app() -> Any:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     app = _app()
-    app._record_contact(update)
-    language = app.language_for_update(update)
     args = getattr(context, "args", None) or []
+    app._record_contact(update, acquisition_source=acquisition_source(args))
+    language = app.language_for_update(update)
     if args and args[0].startswith("ref_") and update.effective_user:
         result = app.attach_referral(update.effective_user.id, args[0][4:])
         if result == "attached":

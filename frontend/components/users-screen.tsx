@@ -3,10 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { AdminLayout } from "@/components/admin-layout";
 import type { AccountUser, UserHistory } from "@/lib/users";
+import { formatDateTime } from "@/lib/activity-types";
 
-const fmt = (value: string | null) => value
-  ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value))
-  : "—";
+const fmt = formatDateTime;
 
 export function UsersScreen() {
   const [users, setUsers] = useState<AccountUser[]>([]);
@@ -61,11 +60,11 @@ export function UsersScreen() {
     <section className="panel">
       <div className="filters"><input aria-label="Search users" placeholder="Username, name, or Telegram ID" value={q} onChange={(event) => setQ(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setPage(1); refresh(); } }} /><select value={access} onChange={(event) => { setAccess(event.target.value); setPage(1); }}><option value="">All users</option><option value="free">Free</option><option value="subscribed">Subscribed</option><option value="complimentary">Complimentary</option><option value="low_credit">Low credit</option><option value="ai_exhausted">AI trials exhausted</option></select></div>
       {error && <p className="inline-error">{error}</p>}
-      <div className="table-wrap"><table><thead><tr><th>User</th><th>Access</th><th>Credits</th><th>AI trials</th><th>Downloads</th><th>Referrals</th><th>Last seen</th><th /></tr></thead><tbody>{users.map((user) => <tr key={user.user_id}>
-        <td><strong>{user.username || user.display_name || "Unnamed"}</strong><span className="muted">{user.user_id}</span></td>
-        <td><span className={`status ${user.premium ? "status-completed" : ""}`}>{user.complimentary ? "complimentary" : user.premium ? "premium" : "free"}</span>{user.subscription_expires_at && <span className="muted">to {fmt(user.subscription_expires_at)}{user.subscription_cancelled ? " · renewal off" : ""}</span>}</td>
-        <td>{user.premium ? "∞" : user.credits}<span className="muted">{user.reserved_credits} reserved</span></td><td>{user.premium ? "∞" : user.ai_trials}<span className="muted">{user.reserved_ai_trials} reserved</span></td>
-        <td>{user.successful_downloads}<span className="muted">{user.successful_operations} total operations</span></td><td>{user.qualified_referrals}<span className="muted">{user.pending_referrals} pending</span>{user.suspicious_referrals > 0 && <span className="error-detail">{user.suspicious_referrals} flagged</span>}</td><td className="nowrap">{fmt(user.last_seen_at)}</td><td><button className="button ghost small-button" onClick={() => open(user)}>Manage</button></td>
+      <div className="table-wrap"><table className="responsive-table"><thead><tr><th>User</th><th>Access</th><th>Credits</th><th>AI trials</th><th>Downloads</th><th>Referrals</th><th>Last seen</th><th /></tr></thead><tbody>{users.map((user) => <tr key={user.user_id}>
+        <td data-label="User"><strong className="truncate" title={user.username || user.display_name || undefined}>{user.username || user.display_name || "Unnamed"}</strong><span className="muted">{user.user_id}</span></td>
+        <td data-label="Access"><span className={`status ${user.premium ? "status-completed" : ""}`}>{user.complimentary ? "complimentary" : user.premium ? "premium" : "free"}</span>{user.subscription_expires_at && <span className="muted">to {fmt(user.subscription_expires_at)}{user.subscription_cancelled ? " · renewal off" : ""}</span>}</td>
+        <td data-label="Credits">{user.premium ? "∞" : user.credits}<span className="muted">{user.reserved_credits} reserved</span></td><td data-label="AI trials">{user.premium ? "∞" : user.ai_trials}<span className="muted">{user.reserved_ai_trials} reserved</span></td>
+        <td data-label="Downloads">{user.successful_downloads}<span className="muted">{user.successful_operations} operations</span></td><td data-label="Referrals">{user.qualified_referrals}<span className="muted">{user.pending_referrals} pending</span>{user.suspicious_referrals > 0 && <span className="error-detail">{user.suspicious_referrals} flagged</span>}</td><td data-label="Last seen" className="nowrap">{fmt(user.last_seen_at)}</td><td><button className="button ghost small-button" onClick={() => open(user)}>Manage</button></td>
       </tr>)}</tbody></table></div>
       {!loading && !users.length && <div className="empty-state"><h2>No users found</h2></div>}
       <div className="pagination"><span>Page {page} of {pages} · {total} users</span><div><button className="button ghost small-button" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</button><button className="button ghost small-button" disabled={page >= pages} onClick={() => setPage((value) => value + 1)}>Next</button></div></div>

@@ -55,7 +55,7 @@ class MonetizationPostgresIntegrationTests(unittest.TestCase):
                     updated_at TIMESTAMPTZ NOT NULL
                 )
             """)
-            connection.execute("CREATE TABLE activity_events (id TEXT PRIMARY KEY, status TEXT NOT NULL)")
+            connection.execute("CREATE TABLE activity_events (id TEXT PRIMARY KEY, status TEXT NOT NULL, action TEXT, telegram_username TEXT)")
             connection.execute("CREATE TABLE transcription_jobs (id TEXT PRIMARY KEY, status TEXT NOT NULL)")
         configured = replace(app_settings.monetization, enabled=True, premium_enabled=True, rollout_percent=100)
         with patch.object(store, "enabled", return_value=True), patch.object(store, "_connect", side_effect=cls.connect), patch.object(store, "settings", SimpleNamespace(monetization=configured)):
@@ -99,6 +99,29 @@ class MonetizationPostgresIntegrationTests(unittest.TestCase):
         with self.connect() as connection:
             grants = connection.execute("SELECT COUNT(*) FROM credit_ledger WHERE telegram_user_id=42 AND reason='starter_grant'").fetchone()[0]
         self.assertEqual(grants, 1)
+
+    def test_acquisition_source_is_first_touch(self):
+        store.ensure_account(user_id=8, chat_id=8, username=None, display_name=None, acquisition_source="tiktok")
+        store.ensure_account(user_id=8, chat_id=8, username=None, display_name=None, acquisition_source="youtube")
+        store.ensure_account(user_id=8, chat_id=8, username=None, display_name=None)
+        self.account(9)
+        store.ensure_account(user_id=9, chat_id=9, username=None, display_name=None, acquisition_source="reddit")
+        with self.connect() as connection:
+            sources = dict(connection.execute("SELECT telegram_user_id, acquisition_source FROM user_accounts").fetchall())
+        self.assertEqual(sources, {8: "tiktok", 9: None})
+
+    def test_usage_reports_acquisition_sources_for_the_period(self):
+        for user_id, username, source in ((1, "@tiktok_one", "tiktok"), (2, "@tiktok_two", "tiktok"),
+                                          (3, "@tester_acc", "tiktok"), (4, "@old_tiktok", "tiktok"), (5, "@organic_u", None)):
+            store.ensure_account(user_id=user_id, chat_id=user_id, username=username, display_name=None, acquisition_source=source)
+        with self.connect() as connection:
+            connection.execute("UPDATE user_accounts SET successful_downloads=2 WHERE telegram_user_id IN (1, 4)")
+            connection.execute("UPDATE user_accounts SET created_at=NOW() - INTERVAL '60 days' WHERE telegram_user_id=4")
+        sources = store.admin_usage(30, ["tester_acc"])["sources"]
+        self.assertEqual(sources, [
+            {"source": "tiktok", "users": 3, "newUsers": 2, "activatedNewUsers": 1},
+            {"source": None, "users": 1, "newUsers": 1, "activatedNewUsers": 0},
+        ])
 
     def test_concurrent_duplicate_reservation_is_atomic_across_connections(self):
         self.account(7)

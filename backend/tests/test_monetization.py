@@ -632,6 +632,41 @@ class EntitlementFlowTests(unittest.IsolatedAsyncioTestCase):
         attach.assert_called_once_with(7, "invitercode")
         self.assertIn("Referral accepted", message.reply_text.await_args_list[0].args[0])
 
+    async def test_start_deep_link_records_acquisition_source(self):
+        update = SimpleNamespace(
+            effective_message=SimpleNamespace(reply_text=AsyncMock()), effective_chat=SimpleNamespace(id=7, type="private"),
+            effective_user=SimpleNamespace(id=7, username="tester", full_name="Test User"),
+        )
+        cases = ((["TikTok"], "tiktok"), (["producthunt"], "producthunt"), (["ref_invitercode"], "referral"), ([], None),
+                 (["bad source!"], None), (["x" * 65], None))
+        for args, expected in cases:
+            with self.subTest(args=args), patch.object(bot, "_record_contact") as record, \
+                    patch.object(bot, "attach_referral", return_value="existing"):
+                await bot.start(update, SimpleNamespace(args=args))
+            record.assert_called_once_with(update, acquisition_source=expected)
+
+    def test_acquisition_source_is_written_only_when_the_account_is_created(self):
+        executed = []
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, query, params=()):
+                executed.append((" ".join(query.split()), params))
+                return Cursor(None)
+
+        with patch.object(store, "enabled", return_value=True), patch.object(store, "_connect", return_value=Connection()), \
+                patch.object(store, "monetization_settings", return_value=fake_settings().monetization):
+            store.ensure_account(user_id=7, chat_id=7, username=None, display_name=None, acquisition_source="tiktok")
+        query, params = executed[0]
+        self.assertIn("acquisition_source", query.split("ON CONFLICT")[0])
+        self.assertNotIn("acquisition_source", query.split("ON CONFLICT")[1])
+        self.assertEqual(params[-1], "tiktok")
+
     async def test_account_details_and_payment_are_private_chat_only(self):
         message = SimpleNamespace(reply_text=AsyncMock())
         update = SimpleNamespace(

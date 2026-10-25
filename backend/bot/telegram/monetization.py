@@ -14,7 +14,7 @@ from ..persistence import monetization_store
 from .commands import _app
 
 
-def ensure_update_account(update: Any) -> dict[str, Any] | None:
+def ensure_update_account(update: Any, *, acquisition_source: str | None = None) -> dict[str, Any] | None:
     user, chat = update.effective_user, update.effective_chat
     if not user or not chat:
         return None
@@ -22,6 +22,7 @@ def ensure_update_account(update: Any) -> dict[str, Any] | None:
         user_id=user.id, chat_id=chat.id if getattr(chat, "type", None) == "private" else None,
         username=f"@{user.username}" if getattr(user, "username", None) else None,
         display_name=getattr(user, "full_name", None),
+        acquisition_source=acquisition_source,
     )
 
 

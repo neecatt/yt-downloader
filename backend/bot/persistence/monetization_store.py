@@ -377,6 +377,8 @@ def initialize() -> None:
                 )
             """)
             connection.execute("CREATE INDEX IF NOT EXISTS idx_accounts_last_seen ON user_accounts(last_seen_at DESC)")
+            connection.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS acquisition_source TEXT")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_accounts_acquisition_source ON user_accounts(acquisition_source)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_operations_user_created ON entitlement_operations(telegram_user_id, created_at DESC)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_referrals_inviter_status ON referrals(inviter_user_id, status, qualified_at)")
             connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_single_starter_grant ON credit_ledger(telegram_user_id, reason) WHERE reason='starter_grant'")
@@ -402,7 +404,10 @@ def initialize() -> None:
         raise RuntimeError("Monetization database initialization failed") from exc
 
 
-def ensure_account(*, user_id: int, chat_id: int | None, username: str | None, display_name: str | None) -> dict[str, Any] | None:
+def ensure_account(*, user_id: int, chat_id: int | None, username: str | None, display_name: str | None,
+                   acquisition_source: str | None = None) -> dict[str, Any] | None:
+    """Create or refresh an account. The acquisition source is first-touch:
+    it is written only when the account is created and never overwritten."""
     if not enabled() or user_id <= 0:
         return None
     now = _now()
@@ -412,8 +417,9 @@ def ensure_account(*, user_id: int, chat_id: int | None, username: str | None, d
         connection.execute("""
             INSERT INTO user_accounts (
                 telegram_user_id, telegram_chat_id, telegram_username, telegram_display_name,
-                credit_balance, ai_trials_remaining, referral_code, created_at, updated_at, last_seen_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                credit_balance, ai_trials_remaining, referral_code, created_at, updated_at, last_seen_at,
+                acquisition_source
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (telegram_user_id) DO UPDATE SET
                 telegram_chat_id = COALESCE(EXCLUDED.telegram_chat_id, user_accounts.telegram_chat_id),
                 telegram_username = EXCLUDED.telegram_username,
@@ -421,7 +427,7 @@ def ensure_account(*, user_id: int, chat_id: int | None, username: str | None, d
                 updated_at = EXCLUDED.updated_at,
                 last_seen_at = EXCLUDED.last_seen_at
         """, (user_id, chat_id, username[:64] if username else None, display_name[:256] if display_name else None,
-        config.starter_credits, config.ai_trials, code, now, now, now))
+        config.starter_credits, config.ai_trials, code, now, now, now, acquisition_source))
         connection.execute("""
             INSERT INTO credit_ledger (id,telegram_user_id,delta,balance_after,reason,operation_id,actor,created_at)
             SELECT %s,telegram_user_id,%s,credit_balance,'starter_grant',NULL,'system',created_at
@@ -848,7 +854,7 @@ def admin_history(user_id: int, limit: int = 100) -> list[dict[str, Any]]:
 def admin_usage(days: int = 30, excluded_usernames: list[str] | None = None) -> dict[str, Any]:
     """Return aggregate product usage for the private operations dashboard."""
     if not enabled():
-        return {"totals": {}, "daily": []}
+        return {"totals": {}, "daily": [], "sources": []}
     days = min(365, max(1, int(days)))
     cutoff = _now() - timedelta(days=days)
     excluded = sorted({value.strip().lstrip("@").lower() for value in (excluded_usernames or []) if value.strip()})
@@ -884,10 +890,25 @@ def admin_usage(days: int = 30, excluded_usernames: list[str] | None = None) -> 
               AND NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username=LOWER(LTRIM(COALESCE(a.telegram_username,ou.telegram_username,''),'@')))
             GROUP BY DATE(o.created_at) ORDER BY DATE(o.created_at)
         """, (excluded, cutoff)).fetchall()
+        # Deep-link payloads are user-controlled, so cap the number of sources returned.
+        source_rows = connection.execute("""
+            WITH excluded AS (SELECT UNNEST(%s::TEXT[]) AS username)
+            SELECT u.acquisition_source, COUNT(*),
+                   COUNT(*) FILTER (WHERE u.created_at >= %s),
+                   COUNT(*) FILTER (WHERE u.created_at >= %s AND u.successful_downloads > 0)
+            FROM user_accounts u
+            WHERE NOT EXISTS (SELECT 1 FROM excluded x WHERE x.username=LOWER(LTRIM(COALESCE(u.telegram_username,''),'@')))
+            GROUP BY u.acquisition_source
+            ORDER BY 3 DESC, 2 DESC, 1 NULLS LAST
+            LIMIT 50
+        """, (excluded, cutoff, cutoff)).fetchall()
     keys = ("users", "newUsers", "successfulOperations", "downloads", "aiRequests", "transcriptions", "summaries", "creditsEarned", "creditsSpent", "qualifiedReferrals")
     return {"totals": dict(zip(keys, (int(value or 0) for value in totals))), "daily": [
         {"date": row[0].isoformat(), "successfulOperations": int(row[1] or 0), "aiRequests": int(row[2] or 0), "summaries": int(row[3] or 0)}
         for row in daily_rows
+    ], "sources": [
+        {"source": row[0], "users": int(row[1] or 0), "newUsers": int(row[2] or 0), "activatedNewUsers": int(row[3] or 0)}
+        for row in source_rows
     ]}
 
 
