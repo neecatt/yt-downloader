@@ -16,6 +16,11 @@ from ..platforms.security import safe_log_error, safe_log_url, validate_remote_u
 
 LOG = logging.getLogger("downloader_bot.downloader")
 ProgressCallback = Callable[[dict[str, Any]], None]
+# TikTok's "audio" format is the reused sound rather than the video's soundtrack,
+# and its H.265 variants can be silent. Its muxed H.264 formats carry real audio.
+AUDIO_FORMAT_SELECTOR = "ba[format_id!=audio]/b[vcodec^=h264]/b[vcodec^=avc]/b/ba"
+_NO_AUDIO_STREAM_MARKER = "unable to obtain file audio codec"
+NO_AUDIO_ERROR = "This media has no audio track"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +78,7 @@ def format_options(config: DownloaderConfig, tmpdir: str, fmt: str, progress_cal
         bitrate = fmt.split("_", 1)[1] if "_" in fmt else "192"
         if bitrate not in {"128", "192", "320"}:
             raise ValueError("Unsupported MP3 bitrate")
-        options.update({"format": "bestaudio/best", "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": bitrate}]})
+        options.update({"format": AUDIO_FORMAT_SELECTOR, "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": bitrate}]})
         return options
     height = {"360p": 360, "480p": 480, "720p": 720, "1080p": 1080, "2k": 1440}.get(fmt)
     if fmt == "best":
@@ -102,6 +107,14 @@ def analyze(config: DownloaderConfig, url: str, tmpdir: str) -> dict[str, Any]:
     return info
 
 
+def _discard_audioless_files(url: str, tmpdir: str) -> None:
+    # With overwrites disabled, a retry would otherwise reuse the same bad file.
+    for path in Path(tmpdir).rglob("*"):
+        if path.is_file():
+            LOG.warning("event=download_no_audio_stream source=%s extension=%s size_bytes=%s", safe_log_url(url), path.suffix.lstrip("."), path.stat().st_size)
+            path.unlink(missing_ok=True)
+
+
 def download(config: DownloaderConfig, url: str, fmt: str, tmpdir: str, progress_callback: ProgressCallback | None = None) -> tuple[dict[str, Any], Path, str]:
     started = time.perf_counter()
     validate_remote_url(url)
@@ -122,7 +135,12 @@ def download(config: DownloaderConfig, url: str, fmt: str, tmpdir: str, progress
             return info, filename, extension
         except Exception as exc:
             LOG.warning("event=download_attempt_failed attempt=%s format=%s error=%s", attempt + 1, fmt, safe_log_error(exc))
+            no_audio = _NO_AUDIO_STREAM_MARKER in str(exc)
+            if no_audio:
+                _discard_audioless_files(url, tmpdir)
             if attempt == 1:
+                if no_audio:
+                    raise ValueError(NO_AUDIO_ERROR) from exc
                 raise
             if "403" in str(exc):
                 options["http_chunk_size"] = config.http_chunk_size_mb * 1024 * 1024

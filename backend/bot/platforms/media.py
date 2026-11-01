@@ -50,6 +50,8 @@ def progress_text(progress: dict[str, Any], fmt: str, language: str = "en") -> s
 
 def display_error(exc: Exception, language: str = "en") -> str:
     text = str(exc).lower()
+    if "no audio track" in text:
+        return tr(language, "no_audio_error")
     if (
         "image post" in text
         or "photo post" in text
