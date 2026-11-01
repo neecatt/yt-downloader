@@ -97,6 +97,7 @@ class QueueSettings:
     max_size: int
     max_per_user: int
     max_retries: int
+    max_download_attempts: int
     retry_after_max_seconds: int
     stale_job_seconds: int
     recovery_interval_seconds: int
@@ -232,6 +233,7 @@ def load_settings() -> AppSettings:
             max_size=_int("TRANSCRIPTION_QUEUE_MAX_SIZE", 100, 1),
             max_per_user=_int("TRANSCRIPTION_QUEUE_MAX_PER_USER", 3, 1),
             max_retries=_int("TRANSCRIPTION_MAX_RETRIES", 2, 0, 10),
+            max_download_attempts=_int("TRANSCRIPTION_MAX_DOWNLOAD_ATTEMPTS", 9, 1, 50),
             retry_after_max_seconds=_int("TRANSCRIPTION_RETRY_AFTER_MAX_SECONDS", 900, 60),
             stale_job_seconds=_int("TRANSCRIPTION_STALE_JOB_SECONDS", 21600, 3600),
             recovery_interval_seconds=_int("TRANSCRIPTION_RECOVERY_INTERVAL_SECONDS", 60, 30, 300),
