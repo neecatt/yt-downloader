@@ -12,6 +12,7 @@ from typing import Any
 from datetime import datetime, timedelta, timezone
 
 from telegram import Bot
+from telegram.error import BadRequest
 
 from ..config.settings import settings
 from ..queue.config import app
@@ -31,6 +32,7 @@ from ..telegram.summary import send_summary
 
 LOG = logging.getLogger("downloader_bot.transcription_worker")
 MAX_RETRIES = settings.queue.max_retries
+MAX_DOWNLOAD_ATTEMPTS = settings.queue.max_download_attempts
 RETRY_AFTER_MAX_SECONDS = settings.queue.retry_after_max_seconds
 _WORKER_INITIALIZED = False
 _DOWNLOADER_CONFIG: DownloaderConfig | None = None
@@ -115,6 +117,10 @@ async def _edit_status(job: dict[str, Any], text: str) -> None:
             if replacement_id and activity_store.set_transcription_status_message_id(job["id"], replacement_id):
                 job["status_message_id"] = replacement_id
                 LOG.info("event=transcription_status_message_replaced job_id=%s", job["id"])
+    except BadRequest as exc:
+        # Queue refreshes often resend the text a message already shows.
+        if "message is not modified" not in str(exc).lower():
+            LOG.warning("event=transcription_status_update_failed job_id=%s", job["id"], exc_info=True)
     except Exception:
         LOG.warning("event=transcription_status_update_failed job_id=%s", job["id"], exc_info=True)
 
@@ -197,6 +203,7 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
     started = time.perf_counter()
     directory = Path(tempfile.mkdtemp(prefix="transcription-"))
     object_key: str | None = None
+    media_downloaded = False
     asyncio.run(_refresh_queue_statuses())
     try:
         language = job["language"]
@@ -205,6 +212,7 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
         LOG.info("event=transcription_job_started job_id=%s", job_id)
         asyncio.run(_edit_status(job, tr(language, "downloading", fmt="mp3")))
         info, audio_file, _ = _download_sync(job["source_url"], "mp3", str(directory))
+        media_downloaded = True
         activity_store.update_event(job.get("activity_id"), status="started", title=info.get("title"), duration_ms=int(float(info.get("duration") or 0) * 1000) if info.get("duration") else None)
         audio_url, object_key = _upload_to_r2(audio_file, info, "mp3")
         asyncio.run(_edit_status(job, tr(language, "summarization_processing" if is_summary else "transcription_processing")))
@@ -239,7 +247,10 @@ def process_transcription(self: Any, job_id: str) -> dict[str, Any]:
         LOG.info("event=transcription_job_finished job_id=%s total_duration_seconds=%.2f", job_id, time.perf_counter() - started)
         return {"status": "completed", "job_id": job_id}
     except Exception as exc:
-        if retryable(exc):
+        # Our own outages stay durable, but a source that keeps refusing a link
+        # must fail eventually so the user is told and their credits are released.
+        download_attempts_left = media_downloaded or job["attempts"] < MAX_DOWNLOAD_ATTEMPTS
+        if retryable(exc) and download_attempts_left:
             retry_number = self.request.retries + 1
             exhausted = self.request.retries >= MAX_RETRIES
             countdown = RETRY_AFTER_MAX_SECONDS if exhausted else retry_delay_seconds(self.request.retries)

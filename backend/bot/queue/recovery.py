@@ -15,6 +15,7 @@ _PERMANENT_MARKERS = (
     "invalid url",
     "invalid video url",
     "larger than the transcription limit",
+    "no audio track",
 )
 
 
