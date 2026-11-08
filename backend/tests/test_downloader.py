@@ -1,12 +1,17 @@
 import os
+import contextlib
+import io
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 import yt_dlp
 
 from backend.bot.platforms.media import display_error
+from backend.bot.platforms.security import safe_log_url
+from backend.bot.integrations.ytdlp_logging import YtdlpLogger
 from backend.bot.queue.recovery import retryable
 from backend.bot.services import downloader
 from backend.bot.services.downloader import DownloaderConfig, NO_AUDIO_ERROR, download, format_options
@@ -22,6 +27,66 @@ NO_AUDIO_FAILURE = "ERROR: Postprocessing: WARNING: unable to obtain file audio 
 
 def _format(format_id, vcodec, acodec, ext="mp4"):
     return {"format_id": format_id, "vcodec": vcodec, "acodec": acodec, "ext": ext, "url": f"https://example.com/{format_id}"}
+
+
+class YouTubeAccessTests(unittest.TestCase):
+    def test_provider_keeps_cookies_and_tries_alternative_clients(self):
+        config = replace(CONFIG, cookies_file="/tmp/cookies.txt", po_provider_url="http://provider:4416")
+        options = downloader.base_options(config, "/tmp/download")
+        self.assertEqual(options["cookiefile"], config.cookies_file)
+        self.assertEqual(options["extractor_args"], {
+            "youtube": {"player_client": ["mweb", "tv", "web_safari"]},
+            "youtubepot-bgutilhttp": {"base_url": [config.po_provider_url]},
+        })
+
+    def test_explicit_clients_and_tokens_are_preserved(self):
+        config = replace(CONFIG, player_client="web", po_token="web.gvs:test", po_provider_url="http://provider:4416")
+        options = downloader.base_options(config, "/tmp/download")
+        self.assertEqual(options["extractor_args"]["youtube"], {
+            "player_client": ["web"], "po_token": ["web.gvs:test"],
+        })
+
+    def test_without_provider_yt_dlp_keeps_its_own_defaults(self):
+        self.assertNotIn("extractor_args", downloader.base_options(CONFIG, "/tmp/download"))
+
+    def test_analysis_keeps_provider_warnings_enabled(self):
+        with patch.object(downloader, "validate_remote_url"), patch.object(downloader.yt_dlp, "YoutubeDL") as ydl:
+            ydl.return_value.__enter__.return_value.extract_info.return_value = {"id": "test"}
+            downloader.analyze(CONFIG, "https://youtu.be/test", "/tmp/download")
+        options = ydl.call_args.args[0]
+        self.assertFalse(options["no_warnings"])
+        self.assertIsInstance(options["logger"], YtdlpLogger)
+
+    def test_real_yt_dlp_surfaces_provider_warnings_without_raw_stderr(self):
+        with tempfile.TemporaryDirectory() as tmpdir, contextlib.redirect_stderr(io.StringIO()) as stderr:
+            with self.assertLogs("downloader_bot.ytdlp", "WARNING") as logs:
+                with yt_dlp.YoutubeDL(downloader.base_options(CONFIG, tmpdir)) as ydl:
+                    ydl.report_warning("Plugin and HTTP server major versions are mismatched. https://provider/ping?secret=hidden")
+                    with self.assertRaises(yt_dlp.utils.DownloadError):
+                        ydl.report_error("Sign in to confirm you're not a bot https://youtu.be/test?token=hidden")
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertTrue(any("major versions are mismatched" in line for line in logs.output))
+        self.assertTrue(any("event=ytdlp_error" in line for line in logs.output))
+        self.assertNotIn("hidden", " ".join(logs.output))
+        self.assertNotIn("https://", " ".join(logs.output))
+
+    def test_debug_secrets_are_not_logged_and_provider_requests_are_visible(self):
+        logger = YtdlpLogger()
+        with self.assertLogs("downloader_bot.ytdlp", "INFO") as logs:
+            logger.debug("[debug] Generated POT: secret-token")
+            logger.debug("[debug] cookies: secret-cookie")
+            logger.info("media title https://youtu.be/private-video")
+            logger.debug("[youtube] [pot:bgutil:http] Generating a gvs PO Token for mweb client via bgutil HTTP server")
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("event=ytdlp_po_token_requested", logs.output[0])
+        self.assertNotIn("secret", logs.output[0])
+
+    def test_logged_source_has_no_credentials_video_id_or_query(self):
+        for url in (
+            "https://youtu.be/private-video?token=hidden#fragment",
+            "https://user:password@youtu.be/private-video",
+        ):
+            self.assertEqual(safe_log_url(url), "https://youtu.be")
 
 
 class AudioFormatSelectionTests(unittest.TestCase):

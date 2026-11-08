@@ -272,7 +272,7 @@ class PureFunctionTests(unittest.TestCase):
         )
         with patch.object(bot, "DOWNLOADER_CONFIG", config):
             options = bot.ydl_base_options("/tmp/download")
-        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb"])
+        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb", "tv", "web_safari"])
         self.assertEqual(
             options["extractor_args"]["youtubepot-bgutilhttp"]["base_url"],
             ["http://bgutil-provider.railway.internal:4416"],
@@ -286,7 +286,7 @@ class PureFunctionTests(unittest.TestCase):
         )
         with patch.object(bot, "DOWNLOADER_CONFIG", config):
             options = bot.ydl_base_options("/tmp/download")
-        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb"])
+        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb", "tv", "web_safari"])
 
     def test_cookie_file_from_base64_requires_netscape_format(self):
         original_b64 = bot.YTDLP_COOKIES_B64
