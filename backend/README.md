@@ -46,3 +46,33 @@ operation, and duplicate callbacks do not create duplicate charges or rewards.
 - Abuse controls for user, queue, and global capacity.
 - Structured operational logging for important product events.
 - Test coverage for normal flows, retries, concurrency, and failure paths.
+
+## YouTube access checks
+
+The bgutil container and the Python plugin installed in the bot and transcription
+workers must use the same version. This repository pins the plugin to `2.0.2`;
+deploy `brainicism/bgutil-ytdlp-pot-provider:2.0.2` alongside it. Rebuild the bot
+and workers after updating `requirements.txt`. Updating only the provider to
+`2.x` leaves the old `1.x` plugin unable to request tokens.
+
+Set `YTDLP_POT_PROVIDER_URL` in both bot and worker services to the provider's
+private HTTP address on port `4416`. Keep the provider accessible only inside
+the deployment network. Leave `YTDLP_PLAYER_CLIENT` blank to try `mweb`, `tv`,
+and `web_safari`; forcing only `mweb` can fail a login check before requesting
+any token. Explicit client overrides are preserved.
+
+The bot logs sanitized provider warnings (including version mismatches and
+connection errors). `event=ytdlp_po_token_requested` means the HTTP provider
+flow was reached; it does not confirm token generation succeeded. See the
+provider logs for generation failures. These diagnostics apply to metadata
+analysis and downloads, including transcription downloads.
+
+A PO token does not resolve every server IP or account restriction. If YouTube
+still requests sign-in after successful token generation, refresh the deployed
+`YTDLP_COOKIES_B64` secret with a Netscape cookie export following
+[yt-dlp's YouTube cookie instructions](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies),
+then restart both bot and workers. Base64 cookies take precedence over
+`YTDLP_COOKIES_FILE`. An unexpired cookie file can still contain a revoked or
+rotated session. Never commit cookie exports or paste their contents into logs.
+
+See also [bgutil's verification guide](https://github.com/Brainicism/bgutil-ytdlp-pot-provider#verification).
