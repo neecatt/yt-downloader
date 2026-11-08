@@ -57,6 +57,10 @@ def base_options(config: DownloaderConfig, tmpdir: str, progress_callback: Progr
     extractor_args: dict[str, dict[str, list[str]]] = {}
     youtube_args: dict[str, list[str]] = {}
     if config.po_provider_url:
+        # The default auto policy can skip player tokens and fail the login
+        # check before reaching GVS token generation. Keep fetching automatic
+        # through the provider, including for contexts marked optional by yt-dlp.
+        youtube_args["fetch_pot"] = ["always"]
         # mweb can fail the login check before a PO token is requested. Let
         # yt-dlp try cookie-compatible alternatives as recommended by bgutil.
         youtube_args["player_client"] = (
