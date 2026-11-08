@@ -65,7 +65,7 @@ def validate_remote_url(url: str) -> None:
 
 def safe_log_url(url: str) -> str:
     parsed = urlsplit(url)
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path[:160], "", ""))
+    return urlunsplit((parsed.scheme, parsed.hostname or "", "", "", ""))
 
 
 def safe_log_error(exc: Exception) -> str:

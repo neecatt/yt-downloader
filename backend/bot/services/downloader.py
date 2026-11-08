@@ -11,6 +11,7 @@ from typing import Any, Callable
 import yt_dlp
 
 from ..observability import log_timing
+from ..integrations.ytdlp_logging import YtdlpLogger
 from ..platforms.routing import is_image_or_carousel_info
 from ..platforms.security import safe_log_error, safe_log_url, validate_remote_url
 
@@ -38,7 +39,8 @@ class DownloaderConfig:
 
 def base_options(config: DownloaderConfig, tmpdir: str, progress_callback: ProgressCallback | None = None) -> dict[str, Any]:
     options: dict[str, Any] = {
-        "noplaylist": True, "quiet": True, "no_warnings": True, "noprogress": True,
+        "noplaylist": True, "quiet": True, "no_warnings": False, "noprogress": True,
+        "logger": YtdlpLogger(),
         "retries": 3, "fragment_retries": 3, "file_access_retries": 3,
         "concurrent_fragment_downloads": config.fragment_workers,
         "socket_timeout": 30, "http_timeout": 30, "continuedl": True,
@@ -55,10 +57,12 @@ def base_options(config: DownloaderConfig, tmpdir: str, progress_callback: Progr
     extractor_args: dict[str, dict[str, list[str]]] = {}
     youtube_args: dict[str, list[str]] = {}
     if config.po_provider_url:
-        player_client = config.player_client
-        if not player_client or player_client == "tv_embedded":
-            player_client = "mweb"
-        youtube_args["player_client"] = [player_client]
+        # mweb can fail the login check before a PO token is requested. Let
+        # yt-dlp try cookie-compatible alternatives as recommended by bgutil.
+        youtube_args["player_client"] = (
+            [config.player_client] if config.player_client and config.player_client != "tv_embedded"
+            else ["mweb", "tv", "web_safari"]
+        )
         extractor_args["youtubepot-bgutilhttp"] = {"base_url": [config.po_provider_url]}
     elif config.player_client:
         youtube_args["player_client"] = [config.player_client]
@@ -94,7 +98,7 @@ def analyze(config: DownloaderConfig, url: str, tmpdir: str) -> dict[str, Any]:
     started = time.perf_counter()
     validate_remote_url(url)
     options = base_options(config, tmpdir)
-    options.update({"quiet": True, "no_warnings": True, "noplaylist": True, "extract_flat": True})
+    options["extract_flat"] = True
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=False)
     if not info:
