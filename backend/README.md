@@ -61,18 +61,28 @@ the deployment network. Leave `YTDLP_PLAYER_CLIENT` blank to try `mweb`, `tv`,
 and `web_safari`; forcing only `mweb` can fail a login check before requesting
 any token. Explicit client overrides are preserved.
 
+When a provider URL is configured, the bot sets `youtube:fetch_pot=always`.
+yt-dlp's default `auto` policy can skip player tokens for clients it considers
+not to require them. YouTube can then reject the player request before yt-dlp
+reaches GVS token generation. `always` requests tokens automatically for those
+contexts too, while retaining the provider's caching and renewal. This setting
+is shared by analysis, downloads, and transcription workers.
+
 The bot logs sanitized provider warnings (including version mismatches and
 connection errors). `event=ytdlp_po_token_requested` means the HTTP provider
 flow was reached; it does not confirm token generation succeeded. See the
 provider logs for generation failures. These diagnostics apply to metadata
 analysis and downloads, including transcription downloads.
 
-A PO token does not resolve every server IP or account restriction. If YouTube
-still requests sign-in after successful token generation, refresh the deployed
-`YTDLP_COOKIES_B64` secret with a Netscape cookie export following
-[yt-dlp's YouTube cookie instructions](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies),
-then restart both bot and workers. Base64 cookies take precedence over
-`YTDLP_COOKIES_FILE`. An unexpired cookie file can still contain a revoked or
-rotated session. Never commit cookie exports or paste their contents into logs.
+A PO token does not resolve every server IP or account restriction, and bgutil
+does not renew Google account cookies. If sign-in is still required, first
+check whether the provider was reached and successfully generated a token.
+If it did, compare the same configuration from another network to investigate
+server IP restrictions before changing credentials. Account cookies, when
+needed, must follow
+[yt-dlp's YouTube cookie instructions](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
+Base64 cookies take precedence over `YTDLP_COOKIES_FILE`. An unexpired cookie
+file can still contain a revoked or rotated session. Never commit cookie
+exports or paste their contents into logs.
 
 See also [bgutil's verification guide](https://github.com/Brainicism/bgutil-ytdlp-pot-provider#verification).
