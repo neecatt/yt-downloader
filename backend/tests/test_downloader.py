@@ -35,7 +35,7 @@ class YouTubeAccessTests(unittest.TestCase):
         options = downloader.base_options(config, "/tmp/download")
         self.assertEqual(options["cookiefile"], config.cookies_file)
         self.assertEqual(options["extractor_args"], {
-            "youtube": {"player_client": ["mweb", "tv", "web_safari"]},
+            "youtube": {"player_client": ["mweb", "tv", "web_safari"], "fetch_pot": ["always"]},
             "youtubepot-bgutilhttp": {"base_url": [config.po_provider_url]},
         })
 
@@ -43,11 +43,45 @@ class YouTubeAccessTests(unittest.TestCase):
         config = replace(CONFIG, player_client="web", po_token="web.gvs:test", po_provider_url="http://provider:4416")
         options = downloader.base_options(config, "/tmp/download")
         self.assertEqual(options["extractor_args"]["youtube"], {
-            "player_client": ["web"], "po_token": ["web.gvs:test"],
+            "player_client": ["web"], "po_token": ["web.gvs:test"], "fetch_pot": ["always"],
         })
 
     def test_without_provider_yt_dlp_keeps_its_own_defaults(self):
         self.assertNotIn("extractor_args", downloader.base_options(CONFIG, "/tmp/download"))
+
+    def test_real_yt_dlp_auto_policy_skips_optional_player_tokens(self):
+        with tempfile.TemporaryDirectory() as tmpdir, yt_dlp.YoutubeDL(downloader.base_options(CONFIG, tmpdir)) as ydl:
+            extractor = ydl.get_info_extractor("Youtube")
+            with patch.object(extractor, "_pot_director") as director:
+                result = extractor._fetch_po_token("mweb", context="player", required=False, video_id="test")
+        self.assertIsNone(result)
+        director.get_po_token.assert_not_called()
+
+    def test_real_yt_dlp_requests_optional_tokens_from_the_configured_provider(self):
+        config = replace(CONFIG, po_provider_url="http://provider:4416")
+        for context in ("player", "gvs"):
+            with self.subTest(context=context):
+                with tempfile.TemporaryDirectory() as tmpdir, yt_dlp.YoutubeDL(downloader.base_options(config, tmpdir)) as ydl:
+                    extractor = ydl.get_info_extractor("Youtube")
+                    with patch.object(extractor, "_pot_director") as director:
+                        director.get_po_token.return_value = "test-token"
+                        result = extractor._fetch_po_token("mweb", context=context, required=False, video_id="test")
+                self.assertEqual(result, "test-token")
+                director.get_po_token.assert_called_once()
+                request = director.get_po_token.call_args.args[0]
+                self.assertEqual(request.context.value, context)
+                self.assertEqual(request.internal_client_name, "mweb")
+                self.assertFalse(request.bypass_cache)
+
+    def test_provider_failure_does_not_fabricate_a_token(self):
+        config = replace(CONFIG, po_provider_url="http://provider:4416")
+        with tempfile.TemporaryDirectory() as tmpdir, yt_dlp.YoutubeDL(downloader.base_options(config, tmpdir)) as ydl:
+            extractor = ydl.get_info_extractor("Youtube")
+            with patch.object(extractor, "_pot_director") as director:
+                director.get_po_token.return_value = None
+                result = extractor._fetch_po_token("mweb", context="player", required=False, video_id="test")
+        self.assertIsNone(result)
+        director.get_po_token.assert_called_once()
 
     def test_analysis_keeps_provider_warnings_enabled(self):
         with patch.object(downloader, "validate_remote_url"), patch.object(downloader.yt_dlp, "YoutubeDL") as ydl:
