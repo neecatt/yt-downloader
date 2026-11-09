@@ -13,6 +13,7 @@ import secrets
 from typing import Any
 
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 
@@ -75,10 +76,15 @@ async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def language_button(update: Update, context: ContextTypes.DEFAULT_TYPE, language: str) -> None:
     app = _app()
     selected = app.update_chat_language(update.effective_chat.id, language)
-    await update.callback_query.edit_message_text(
-        app.tr(selected, "welcome"),
-        reply_markup=app.start_keyboard(selected),
-    )
+    try:
+        await update.callback_query.edit_message_text(
+            app.tr(selected, "welcome"),
+            reply_markup=app.start_keyboard(selected),
+        )
+    except BadRequest as exc:
+        # A repeated language selection already displays the requested screen.
+        if "message is not modified" not in str(exc).lower():
+            raise
 
 
 async def feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
