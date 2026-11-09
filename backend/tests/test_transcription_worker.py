@@ -73,10 +73,10 @@ class DownloadAttemptLimitTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         return mock
 
-    def run_job(self, attempts):
+    def run_job(self, attempts, job_type="transcription"):
         self.store.get_transcription_job.return_value = {
             "id": JOB_ID, "status": "queued", "chat_id": 10, "status_message_id": 20, "language": "en",
-            "job_type": "transcription", "attempts": attempts, "activity_id": None,
+            "job_type": job_type, "attempts": attempts, "activity_id": None,
             "entitlement_operation_id": "operation", "source_url": "https://www.tiktok.com/@u/video/1",
         }
         return self.task.run(JOB_ID)
@@ -90,6 +90,20 @@ class DownloadAttemptLimitTests(unittest.TestCase):
                 self.run_job(attempts=8)
         self.assertEqual(self.final_status(), "queued")
         self.monetization.release.assert_not_called()
+
+    def test_youtube_access_check_does_not_start_ai_or_change_the_retry_delay(self):
+        error = RuntimeError("ERROR: [youtube] test: Sign in to confirm you’re not a bot")
+        with patch.object(self.worker, "_download_sync", side_effect=error), \
+             patch.object(self.worker, "_upload_to_r2") as upload, \
+             patch.object(self.worker, "transcribe_audio_url_sync") as transcribe:
+            with self.assertRaises(Retried):
+                self.run_job(attempts=1, job_type="summary")
+        self.assertEqual(self.final_status(), "queued")
+        self.assertEqual(self.retry.call_args.kwargs["countdown"], 10)
+        upload.assert_not_called()
+        transcribe.assert_not_called()
+        self.monetization.release.assert_not_called()
+        self.monetization.settle.assert_not_called()
 
     def test_source_failure_at_the_limit_fails_and_releases_credits(self):
         with patch.object(self.worker, "_download_sync", side_effect=SOURCE_REFUSED):

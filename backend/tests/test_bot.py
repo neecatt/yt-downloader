@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from telegram.error import BadRequest, NetworkError
+
 # Unit tests must never load local production secrets or write activity to the
 # configured PostgreSQL database.
 os.environ["YT_DOWNLOADER_TESTING"] = "1"
@@ -264,7 +266,7 @@ class PureFunctionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bot.ydl_options("/tmp", "4k")
 
-    def test_pot_provider_configures_mweb_and_private_provider(self):
+    def test_pot_provider_configures_maintained_clients_and_private_provider(self):
         config = replace(
             bot.DOWNLOADER_CONFIG,
             po_provider_url="http://bgutil-provider.railway.internal:4416",
@@ -272,7 +274,7 @@ class PureFunctionTests(unittest.TestCase):
         )
         with patch.object(bot, "DOWNLOADER_CONFIG", config):
             options = bot.ydl_base_options("/tmp/download")
-        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb", "tv", "web_safari"])
+        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["default", "mweb"])
         self.assertEqual(
             options["extractor_args"]["youtubepot-bgutilhttp"]["base_url"],
             ["http://bgutil-provider.railway.internal:4416"],
@@ -286,7 +288,7 @@ class PureFunctionTests(unittest.TestCase):
         )
         with patch.object(bot, "DOWNLOADER_CONFIG", config):
             options = bot.ydl_base_options("/tmp/download")
-        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb", "tv", "web_safari"])
+        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["default", "mweb"])
 
     def test_cookie_file_from_base64_requires_netscape_format(self):
         original_b64 = bot.YTDLP_COOKIES_B64
@@ -412,6 +414,25 @@ class AsyncHandlerTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(bot, "activity_store", create=True):
             await bot.language_button_handler(update, SimpleNamespace(), "ru")
         self.assertIn("Добро пожаловать", query.edited[0])
+
+    async def test_repeated_language_selection_accepts_an_unchanged_message(self):
+        update, message = update_for()
+        update.callback_query = FakeQuery("lang|ru", message)
+        error = BadRequest("Message is not modified: specified new message content and reply markup are exactly the same")
+        with patch.object(bot, "activity_store"), \
+             patch.object(update.callback_query, "edit_message_text", new=AsyncMock(side_effect=error)):
+            await bot.language_button_handler(update, SimpleNamespace(), "ru")
+        self.assertEqual(bot.chat_language(update.effective_chat.id), "ru")
+
+    async def test_language_selection_does_not_hide_other_telegram_failures(self):
+        for error in (BadRequest("Message to edit not found"), NetworkError("Bad Gateway")):
+            with self.subTest(error=type(error).__name__):
+                update, message = update_for()
+                update.callback_query = FakeQuery("lang|ru", message)
+                with patch.object(bot, "activity_store"), \
+                     patch.object(update.callback_query, "edit_message_text", new=AsyncMock(side_effect=error)):
+                    with self.assertRaises(type(error)):
+                        await bot.language_button_handler(update, SimpleNamespace(), "ru")
 
     async def test_settings_command_shows_language_buttons(self):
         update, message = update_for()
