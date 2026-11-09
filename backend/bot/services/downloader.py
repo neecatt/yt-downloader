@@ -37,6 +37,10 @@ class DownloaderConfig:
     po_provider_url: str | None
 
 
+def _configured_clients(config: DownloaderConfig) -> list[str]:
+    return [client.strip() for client in (config.player_client or "").split(",") if client.strip()]
+
+
 def base_options(config: DownloaderConfig, tmpdir: str, progress_callback: ProgressCallback | None = None) -> dict[str, Any]:
     options: dict[str, Any] = {
         "noplaylist": True, "quiet": True, "no_warnings": False, "noprogress": True,
@@ -56,20 +60,21 @@ def base_options(config: DownloaderConfig, tmpdir: str, progress_callback: Progr
         options["js_runtimes"] = {config.js_runtime: {}}
     extractor_args: dict[str, dict[str, list[str]]] = {}
     youtube_args: dict[str, list[str]] = {}
+    player_clients = _configured_clients(config)
     if config.po_provider_url:
         # The default auto policy can skip player tokens and fail the login
         # check before reaching GVS token generation. Keep fetching automatic
         # through the provider, including for contexts marked optional by yt-dlp.
         youtube_args["fetch_pot"] = ["always"]
-        # mweb can fail the login check before a PO token is requested. Let
-        # yt-dlp try cookie-compatible alternatives as recommended by bgutil.
+        # Keep yt-dlp's maintained defaults as clients change upstream. mweb
+        # also lets the configured PO-token provider supply its supported route.
         youtube_args["player_client"] = (
-            [config.player_client] if config.player_client and config.player_client != "tv_embedded"
-            else ["mweb", "tv", "web_safari"]
+            player_clients if player_clients and player_clients != ["tv_embedded"]
+            else ["default", "mweb"]
         )
         extractor_args["youtubepot-bgutilhttp"] = {"base_url": [config.po_provider_url]}
-    elif config.player_client:
-        youtube_args["player_client"] = [config.player_client]
+    elif player_clients:
+        youtube_args["player_client"] = player_clients
     if config.po_token:
         youtube_args["po_token"] = [config.po_token]
     if youtube_args:
@@ -123,10 +128,27 @@ def _discard_audioless_files(url: str, tmpdir: str) -> None:
             path.unlink(missing_ok=True)
 
 
+def _try_youtube_access_fallback(config: DownloaderConfig, options: dict[str, Any], error: Exception) -> None:
+    clients = _configured_clients(config)
+    if not config.po_provider_url or (clients and clients != ["tv_embedded"]):
+        return
+    text = str(error).lower()
+    if "[youtube]" not in text or "sign in to confirm" not in text or "not a bot" not in text:
+        return
+    # Reuse the existing second attempt for a different player/HLS route.
+    # Provider, proxy, size limits and progress hooks stay attached to the job.
+    options["extractor_args"]["youtube"]["player_client"] = ["web_safari"]
+    LOG.info("event=youtube_client_fallback client=web_safari reason=access_check")
+
+
 def download(config: DownloaderConfig, url: str, fmt: str, tmpdir: str, progress_callback: ProgressCallback | None = None) -> tuple[dict[str, Any], Path, str]:
     started = time.perf_counter()
     validate_remote_url(url)
     LOG.info("event=download_started source=%s format=%s", safe_log_url(url), fmt)
+    LOG.info(
+        "event=download_access_config provider_configured=%s cookies_configured=%s proxy_configured=%s js_runtime_configured=%s",
+        bool(config.po_provider_url), bool(config.cookies_file), bool(config.proxy), bool(config.js_runtime),
+    )
     options = format_options(config, tmpdir, fmt, progress_callback)
     for attempt in range(2):
         try:
@@ -150,6 +172,7 @@ def download(config: DownloaderConfig, url: str, fmt: str, tmpdir: str, progress
                 if no_audio:
                     raise ValueError(NO_AUDIO_ERROR) from exc
                 raise
+            _try_youtube_access_fallback(config, options, exc)
             if "403" in str(exc):
                 options["http_chunk_size"] = config.http_chunk_size_mb * 1024 * 1024
                 options["continuedl"] = False
