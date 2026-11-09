@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import yt_dlp
@@ -30,12 +31,26 @@ def _format(format_id, vcodec, acodec, ext="mp4"):
 
 
 class YouTubeAccessTests(unittest.TestCase):
+    def test_comma_separated_clients_are_passed_as_individual_clients(self):
+        for provider in (None, "http://provider:4416"):
+            with self.subTest(provider=bool(provider)):
+                config = replace(CONFIG, player_client=" mweb, tv, web_safari, ", po_provider_url=provider)
+                options = downloader.base_options(config, "/tmp/download")
+                self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["mweb", "tv", "web_safari"])
+
+    def test_empty_client_list_keeps_the_automatic_policy(self):
+        config = replace(CONFIG, player_client=" , ")
+        self.assertNotIn("extractor_args", downloader.base_options(config, "/tmp/download"))
+        config = replace(config, po_provider_url="http://provider:4416")
+        options = downloader.base_options(config, "/tmp/download")
+        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["default", "mweb"])
+
     def test_provider_keeps_cookies_and_tries_alternative_clients(self):
         config = replace(CONFIG, cookies_file="/tmp/cookies.txt", po_provider_url="http://provider:4416")
         options = downloader.base_options(config, "/tmp/download")
         self.assertEqual(options["cookiefile"], config.cookies_file)
         self.assertEqual(options["extractor_args"], {
-            "youtube": {"player_client": ["mweb", "tv", "web_safari"], "fetch_pot": ["always"]},
+            "youtube": {"player_client": ["default", "mweb"], "fetch_pot": ["always"]},
             "youtubepot-bgutilhttp": {"base_url": [config.po_provider_url]},
         })
 
@@ -48,6 +63,30 @@ class YouTubeAccessTests(unittest.TestCase):
 
     def test_without_provider_yt_dlp_keeps_its_own_defaults(self):
         self.assertNotIn("extractor_args", downloader.base_options(CONFIG, "/tmp/download"))
+
+    def test_automatic_mode_includes_the_real_yt_dlp_defaults_without_account_cookies(self):
+        config = replace(CONFIG, po_provider_url="http://provider:4416")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            options = downloader.base_options(config, tmpdir)
+            self.assertNotIn("cookiefile", options)
+            with yt_dlp.YoutubeDL(options) as ydl:
+                extractor = ydl.get_info_extractor("Youtube")
+                with patch.object(extractor, "_jsc_director", create=True) as js:
+                    js.providers.values.return_value = [SimpleNamespace(is_available=lambda: True)]
+                    clients = extractor._get_requested_clients("https://youtu.be/test", {}, False)
+        self.assertTrue(set(extractor._DEFAULT_CLIENTS).issubset(clients))
+        self.assertIn("mweb", clients)
+
+    def test_legacy_embedded_setting_uses_the_maintained_automatic_policy(self):
+        config = replace(CONFIG, player_client=" tv_embedded ", po_provider_url="http://provider:4416")
+        options = downloader.base_options(config, "/tmp/download")
+        self.assertEqual(options["extractor_args"]["youtube"]["player_client"], ["default", "mweb"])
+
+    def test_real_yt_dlp_receives_three_clients_instead_of_one_unsupported_name(self):
+        config = replace(CONFIG, player_client="mweb,tv,web_safari", po_provider_url="http://provider:4416")
+        with tempfile.TemporaryDirectory() as tmpdir, yt_dlp.YoutubeDL(downloader.base_options(config, tmpdir)) as ydl:
+            extractor = ydl.get_info_extractor("Youtube")
+            self.assertEqual(extractor._configuration_arg("player_client"), ["mweb", "tv", "web_safari"])
 
     def test_real_yt_dlp_auto_policy_skips_optional_player_tokens(self):
         with tempfile.TemporaryDirectory() as tmpdir, yt_dlp.YoutubeDL(downloader.base_options(CONFIG, tmpdir)) as ydl:
@@ -121,6 +160,133 @@ class YouTubeAccessTests(unittest.TestCase):
             "https://user:password@youtu.be/private-video",
         ):
             self.assertEqual(safe_log_url(url), "https://youtu.be")
+
+    def test_download_reports_access_configuration_without_credential_values(self):
+        config = replace(
+            CONFIG, cookies_file="/secret-cookie-path", proxy="https://user:secret-proxy@proxy.example",
+            po_provider_url="http://provider.example/secret-provider-path", js_runtime="node",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             patch.object(downloader, "validate_remote_url"), \
+             patch.object(downloader.time, "sleep"), \
+             patch.object(downloader.yt_dlp, "YoutubeDL") as ydl, \
+             self.assertLogs("downloader_bot.downloader", "INFO") as logs:
+            ydl.return_value.__enter__.return_value.extract_info.side_effect = RuntimeError("network timeout")
+            with self.assertRaisesRegex(RuntimeError, "network timeout"):
+                download(config, "https://youtu.be/test", "mp3", tmpdir)
+        events = [line for line in logs.output if "event=download_access_config" in line]
+        self.assertEqual(len(events), 1)
+        self.assertIn("provider_configured=True cookies_configured=True proxy_configured=True js_runtime_configured=True", events[0])
+        self.assertNotIn("secret", " ".join(logs.output))
+
+
+class YouTubeAutomaticRetryTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.tmpdir = directory.name
+        self.config = replace(CONFIG, po_provider_url="http://provider:4416")
+        self.seen_clients = []
+        self.seen_token_policies = []
+        self.seen_options = []
+        for target in ("validate_remote_url", "time.sleep"):
+            patcher = patch(f"backend.bot.services.downloader.{target}")
+            mock = patcher.start()
+            self.addCleanup(patcher.stop)
+            if target == "time.sleep":
+                self.sleep = mock
+
+    def run_download(self, *outcomes, config=None, progress_callback=None):
+        remaining = list(outcomes)
+        seen_clients = self.seen_clients
+        seen_token_policies = self.seen_token_policies
+        seen_options = self.seen_options
+        tmpdir = self.tmpdir
+
+        class FakeYoutubeDL:
+            def __init__(self, options):
+                seen_options.append(dict(options))
+                args = options.get("extractor_args", {}).get("youtube", {})
+                seen_clients.append(list(args.get("player_client", [])))
+                seen_token_policies.append(list(args.get("fetch_pot", [])))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def extract_info(self, _url, download):
+                outcome = remaining.pop(0)
+                if outcome is not None:
+                    raise outcome
+                Path(tmpdir, "clip.mp3").write_bytes(b"audio")
+                return {"id": "test", "title": "Clip"}
+
+        with patch.object(downloader.yt_dlp, "YoutubeDL", FakeYoutubeDL):
+            return download(config or self.config, "https://youtu.be/test", "mp3", self.tmpdir, progress_callback)
+
+    def test_bot_check_uses_the_existing_second_attempt_for_a_different_client(self):
+        error = yt_dlp.utils.DownloadError("ERROR: [youtube] test: Sign in to confirm you’re not a bot")
+        with self.assertLogs("downloader_bot.downloader", "INFO") as logs:
+            _, filename, extension = self.run_download(error, None)
+        self.assertEqual(self.seen_clients, [["default", "mweb"], ["web_safari"]])
+        self.assertEqual(self.seen_token_policies, [["always"], ["always"]])
+        self.assertEqual((filename.read_bytes(), extension), (b"audio", "mp3"))
+        self.sleep.assert_called_once_with(2)
+        self.assertTrue(any("event=youtube_client_fallback" in line for line in logs.output))
+
+    def test_rejected_fallback_still_raises_after_two_attempts(self):
+        error = yt_dlp.utils.DownloadError("ERROR: [youtube] test: Sign in to confirm you're not a bot")
+        with self.assertRaises(yt_dlp.utils.DownloadError) as caught:
+            self.run_download(error, error)
+        self.assertIs(caught.exception, error)
+        self.assertEqual(len(self.seen_clients), 2)
+        self.assertEqual(list(Path(self.tmpdir).iterdir()), [])
+
+    def test_successful_first_attempt_does_not_add_requests_or_delays(self):
+        self.run_download(None)
+        self.assertEqual(self.seen_clients, [["default", "mweb"]])
+        self.sleep.assert_not_called()
+
+    def test_explicit_client_selection_is_preserved_on_retry(self):
+        error = yt_dlp.utils.DownloadError("ERROR: [youtube] test: Sign in to confirm you're not a bot")
+        self.run_download(error, None, config=replace(self.config, player_client="mweb"))
+        self.assertEqual(self.seen_clients, [["mweb"], ["mweb"]])
+
+    def test_ordinary_network_and_private_video_errors_do_not_change_clients(self):
+        for text in ("network timeout", "ERROR: [youtube] test: Private video. Please sign in", "HTTP Error 403: Forbidden"):
+            with self.subTest(error=text):
+                self.seen_clients.clear()
+                self.run_download(RuntimeError(text), None)
+                self.assertEqual(self.seen_clients, [["default", "mweb"], ["default", "mweb"]])
+
+    def test_other_platforms_do_not_trigger_the_youtube_fallback(self):
+        error = RuntimeError("ERROR: [other] Sign in to confirm you're not a bot")
+        self.run_download(error, None)
+        self.assertEqual(self.seen_clients, [["default", "mweb"], ["default", "mweb"]])
+
+    def test_without_a_provider_the_existing_yt_dlp_policy_is_preserved(self):
+        error = yt_dlp.utils.DownloadError("ERROR: [youtube] test: Sign in to confirm you're not a bot")
+        self.run_download(error, None, config=CONFIG)
+        self.assertEqual(self.seen_clients, [[], []])
+
+    def test_fallback_preserves_resource_limits_provider_proxy_and_progress_hooks(self):
+        config = replace(self.config, proxy="http://proxy.example:8080", max_bytes=20)
+        error = yt_dlp.utils.DownloadError("ERROR: [youtube] test: Sign in to confirm you're not a bot")
+
+        def progress(_data):
+            pass
+
+        self.run_download(error, None, config=config, progress_callback=progress)
+        for options in self.seen_options:
+            self.assertEqual(options["max_filesize"], config.max_bytes)
+            self.assertEqual(options["proxy"], config.proxy)
+            self.assertEqual(options["socket_timeout"], 30)
+            self.assertEqual(options["progress_hooks"], [progress])
+            self.assertEqual(options["postprocessor_hooks"], [progress])
+            self.assertEqual(options["extractor_args"]["youtubepot-bgutilhttp"]["base_url"], [config.po_provider_url])
+            self.assertNotIn("cookiefile", options)
 
 
 class AudioFormatSelectionTests(unittest.TestCase):

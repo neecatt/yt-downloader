@@ -44,7 +44,7 @@ try:
     from .bot.platforms.media import display_error, format_duration, progress_text, safe_filename
     from .bot.platforms.routing import activity_platform, is_x_photo_link, should_analyze_media_type
     from .bot.services import downloader, storage
-    from .bot.telegram import callbacks, commands, delivery, keyboards, messages, monetization
+    from .bot.telegram import callbacks, commands, delivery, errors, keyboards, messages, monetization
     from .bot.persistence import activity_store, monetization_store
     from .bot.observability import configure_logging, log_timing
     from .bot.integrations.transcription import (
@@ -67,7 +67,7 @@ except ImportError:  # Supports running `python main.py` in backend.
     from bot.platforms.media import display_error, format_duration, progress_text, safe_filename
     from bot.platforms.routing import activity_platform, is_x_photo_link, should_analyze_media_type
     from bot.services import downloader, storage
-    from bot.telegram import callbacks, commands, delivery, keyboards, messages, monetization
+    from bot.telegram import callbacks, commands, delivery, errors, keyboards, messages, monetization
     from bot.persistence import activity_store, monetization_store
     from bot.observability import configure_logging, log_timing
     from bot.integrations.transcription import (
@@ -703,6 +703,7 @@ def main() -> None:
     if TELEGRAM_API_FILE_BASE_URL:
         builder = builder.base_file_url(TELEGRAM_API_FILE_BASE_URL)
     application = builder.build()
+    application.add_error_handler(errors.handle_error)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("support", support_command))
     application.add_handler(CommandHandler("feedback", feedback_command))
